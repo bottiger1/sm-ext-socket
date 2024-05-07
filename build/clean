@@ -1,0 +1,4 @@
+#!/bin/bash
+rm -rf package .ambuild2 socket.ext
+cd ..
+rm -rf hl2sdk-manifests

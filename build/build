@@ -1,0 +1,8 @@
+#!/bin/bash
+
+#ln -s ../sdk/hl2sdk-manifests ../
+
+python3 ../configure.py \
+	--sm-path ../../sdk/sourcemod \
+	--boost-path /home/lorph/boost_1_85_0
+ambuild

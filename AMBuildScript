@@ -178,6 +178,7 @@ class ExtensionConfig(object):
     ]
 
     # setup boost libraries
+
     cxx.linkflags += ['/LIBPATH:"' + os.path.join(self.boost_root, 'stage', 'x86_64', 'lib') + '"']
 
     if builder.options.opt == '1':
@@ -196,7 +197,9 @@ class ExtensionConfig(object):
     
     # link flags based off of socket Makefile
     cxx.linkflags += ['-lpthread', '-Wl,-Bstatic', '-lm', '-lstdc++']
+
     cxx.linkflags += ['-L', os.path.join(self.boost_root, 'stage', 'x86_64', 'lib')]
+
     cxx.linkflags += ['-lboost_thread']
     cxx.linkflags += ['-Wl,-Bdynamic']
     if cxx.vendor == 'gcc':
@@ -209,7 +212,6 @@ class ExtensionConfig(object):
     cxx.cflags += ['-mmacosx-version-min=10.5']
     cxx.linkflags += [
       '-mmacosx-version-min=10.5',
-      '-arch', 'i386',
       '-lstdc++',
       '-stdlib=libstdc++',
     ]
