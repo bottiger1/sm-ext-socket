@@ -102,19 +102,18 @@ class ExtensionConfig(object):
       '-Wno-switch',
       '-Wno-array-bounds',
       '-msse',
-      '-m32',
       '-fvisibility=hidden',
     ]
     cxx.cxxflags += [
-      '-std=c++11',
+      '-std=c++17',
       # '-fno-exceptions',
       '-fno-threadsafe-statics',
       '-Wno-non-virtual-dtor',
       '-Wno-overloaded-virtual',
       '-fvisibility-inlines-hidden',
       '-D_GLIBCXX_USE_CXX11_ABI=0',
+      '-fPIC'
     ]
-    cxx.linkflags += ['-m32']
 
     have_gcc = cxx.vendor == 'gcc'
     have_clang = cxx.vendor == 'clang'
@@ -179,7 +178,7 @@ class ExtensionConfig(object):
     ]
 
     # setup boost libraries
-    cxx.linkflags += ['/LIBPATH:"' + os.path.join(self.boost_root, 'stage', 'x86', 'lib') + '"']
+    cxx.linkflags += ['/LIBPATH:"' + os.path.join(self.boost_root, 'stage', 'x86_64', 'lib') + '"']
 
     if builder.options.opt == '1':
       cxx.cflags += ['/Ox', '/Zo']
@@ -197,7 +196,7 @@ class ExtensionConfig(object):
     
     # link flags based off of socket Makefile
     cxx.linkflags += ['-lpthread', '-Wl,-Bstatic', '-lm', '-lstdc++']
-    cxx.linkflags += ['-L', os.path.join(self.boost_root, 'stage', 'x86', 'lib')]
+    cxx.linkflags += ['-L', os.path.join(self.boost_root, 'stage', 'x86_64', 'lib')]
     cxx.linkflags += ['-lboost_thread']
     cxx.linkflags += ['-Wl,-Bdynamic']
     if cxx.vendor == 'gcc':
