@@ -31,13 +31,13 @@ public:
 	void StopProcessing();
 
 	//friend class Socket;
-	boost::asio::io_service* ioService;
+	boost::asio::io_context* ioService;
 
 private:
 	std::deque<SocketWrapper*> socketList;
 	boost::mutex socketListMutex;
 
-	boost::asio::io_service::work* ioServiceWork;
+	boost::asio::io_context::work* ioServiceWork;
 
 	boost::thread* ioServiceProcessingThread;
 	bool ioServiceProcessingThreadInitialized;

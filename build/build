@@ -4,5 +4,5 @@
 
 python3 ../configure.py \
 	--sm-path ../../sdk/sourcemod \
-	--boost-path /home/lorph/boost_1_85_0
+	--boost-path /home/lorph/boost_1_86_0
 ambuild

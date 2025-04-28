@@ -189,57 +189,78 @@ void Socket<SocketType>::BindPostResolveHandler(typename SocketType::resolver* r
 
 template <class SocketType>
 bool Socket<SocketType>::Connect(const char* hostname, uint16_t port, bool async) {
-	typename SocketType::resolver* resolver = NULL;
-	boost::shared_lock<boost::shared_mutex>* handlerLock = NULL;
+    typename SocketType::resolver* resolver = NULL;
+    boost::shared_lock<boost::shared_mutex>* handlerLock = NULL;
 
-	try {
-		char sPort[6];
-		snprintf(sPort, sizeof(sPort), "%hu", port);
+    try {
+        char sPort[6];
+        snprintf(sPort, sizeof(sPort), "%hu", port);
 
-		if (!socket) InitializeSocket();
+        if (!socket) InitializeSocket();
 
-		if (async) {
-			resolver = new typename SocketType::resolver(*socketHandler.ioService);
-			handlerLock = new boost::shared_lock<boost::shared_mutex>(handlerMutex);
+        if (async) {
+            resolver = new typename SocketType::resolver(*socketHandler.ioService);
+            handlerLock = new boost::shared_lock<boost::shared_mutex>(handlerMutex);
 
-			resolver->async_resolve(typename SocketType::resolver::query(SocketType::v4(), hostname, sPort),
-									boost::bind(&Socket<SocketType>::ConnectPostResolveHandler,
-												this,
-												resolver,
-												boost::asio::placeholders::iterator,
-												boost::asio::placeholders::error,
-												handlerLock));
-		} else {
-			typename SocketType::resolver syncResolver(*socketHandler.ioService);
+            auto timer = std::make_shared<boost::asio::deadline_timer>(*socketHandler.ioService);
+            timer->expires_from_now(boost::posix_time::seconds(2));
 
-			typename SocketType::resolver::iterator endpointIterator = syncResolver.resolve(typename SocketType::resolver::query(SocketType::v4(), hostname, sPort));
+            resolver->async_resolve(
+                typename SocketType::resolver::query(SocketType::v4(), hostname, sPort),
+                [this, resolver, handlerLock, timer](const boost::system::error_code& errorCode, typename SocketType::resolver::iterator endpointIterator) {
+                    timer->cancel();
 
-			boost::system::error_code error = boost::asio::error::host_not_found;
-			typename SocketType::resolver::iterator end;
+                    if (!errorCode) {
+                        ConnectPostResolveHandler(resolver, endpointIterator, errorCode, handlerLock);
+                    } else {
+                        boost::mutex::scoped_lock l(socketMutex);
+                        if (socket) callbackHandler.AddCallback(new Callback(CallbackEvent_Error, this, SM_ErrorType_NO_HOST, errorCode.value()));
+                        delete resolver;
+                        delete handlerLock;
+                    }
+                });
 
-			while (error && endpointIterator != end) {
-				boost::mutex::scoped_lock l(socketMutex);
+            timer->async_wait([this, resolver, handlerLock](const boost::system::error_code& errorCode) {
+                if (!errorCode) {
+                    resolver->cancel();
+                    boost::mutex::scoped_lock l(socketMutex);
+                    if (socket) callbackHandler.AddCallback(new Callback(CallbackEvent_Error, this, SM_ErrorType_NO_HOST, boost::asio::error::host_not_found));
+                    delete resolver;
+                    delete handlerLock;
+                }
+            });
 
-				if (socket) {
-					socket->connect(*endpointIterator++, error);
-					if (error) socket->close();
-				} else {
-					throw std::logic_error("Operation cancelled.");
-				}
-			}
+        } else {
+            typename SocketType::resolver syncResolver(*socketHandler.ioService);
 
-			if (error) throw boost::system::system_error(error);
+            typename SocketType::resolver::iterator endpointIterator = syncResolver.resolve(typename SocketType::resolver::query(SocketType::v4(), hostname, sPort));
 
-			ReceiveHandler(new char[16384], 16384, 0, boost::system::errc::make_error_code(boost::system::errc::success), new boost::shared_lock<boost::shared_mutex>(handlerMutex));
-		}
+            boost::system::error_code error = boost::asio::error::host_not_found;
+            typename SocketType::resolver::iterator end;
 
-		return true;
-	} catch (std::exception&) {
-		if (resolver) delete resolver;
-		if (handlerLock) delete handlerLock;
-	}
+            while (error && endpointIterator != end) {
+                boost::mutex::scoped_lock l(socketMutex);
 
-	return false;
+                if (socket) {
+                    socket->connect(*endpointIterator++, error);
+                    if (error) socket->close();
+                } else {
+                    throw std::logic_error("Operation cancelled.");
+                }
+            }
+
+            if (error) throw boost::system::system_error(error);
+
+            ReceiveHandler(new char[16384], 16384, 0, boost::system::errc::make_error_code(boost::system::errc::success), new boost::shared_lock<boost::shared_mutex>(handlerMutex));
+        }
+
+        return true;
+    } catch (std::exception&) {
+        if (resolver) delete resolver;
+        if (handlerLock) delete handlerLock;
+    }
+
+    return false;
 }
 
 template <class SocketType>
@@ -489,56 +510,77 @@ bool Socket<SocketType>::SendTo(const std::string& data, const char* hostname, u
 
 template <>
 bool Socket<udp>::SendTo(const std::string& data, const char* hostname, uint16_t port, bool async) {
-	char* buf = NULL;
-	udp::resolver* resolver = NULL;
-	boost::shared_lock<boost::shared_mutex>* handlerLock = NULL;
+    char* buf = NULL;
+    udp::resolver* resolver = NULL;
+    boost::shared_lock<boost::shared_mutex>* handlerLock = NULL;
 
-	try {
-		char sPort[6];
-		snprintf(sPort, sizeof(sPort), "%hu", port);
+    try {
+        char sPort[6];
+        snprintf(sPort, sizeof(sPort), "%hu", port);
 
-		if (!socket) InitializeSocket();
+        if (!socket) InitializeSocket();
 
-		if (async) {
-			buf = new char[data.length()];
-			memcpy(buf, data.data(), data.length());
+        if (async) {
+            buf = new char[data.length()];
+            memcpy(buf, data.data(), data.length());
 
-			sendQueueLength++;
+            sendQueueLength++;
 
-			resolver = new udp::resolver(*socketHandler.ioService);
-			handlerLock = new boost::shared_lock<boost::shared_mutex>(handlerMutex);
+            resolver = new udp::resolver(*socketHandler.ioService);
+            handlerLock = new boost::shared_lock<boost::shared_mutex>(handlerMutex);
 
-			resolver->async_resolve(udp::resolver::query(udp::v4(), hostname, sPort),
-									boost::bind(&Socket<udp>::SendToPostResolveHandler,
-												this,
-												resolver,
-												boost::asio::placeholders::iterator,
-												buf,
-												data.length(),
-												boost::asio::placeholders::error,
-												handlerLock));
-		} else {
-			udp::resolver syncResolver(*socketHandler.ioService);
+            auto timer = std::make_shared<boost::asio::deadline_timer>(*socketHandler.ioService);
+            timer->expires_from_now(boost::posix_time::seconds(2));
 
-			udp::resolver::iterator endpointIterator = syncResolver.resolve(udp::resolver::query(udp::v4(), hostname, sPort));
+            resolver->async_resolve(
+                udp::resolver::query(udp::v4(), hostname, sPort),
+                [this, resolver, buf, handlerLock, timer](const boost::system::error_code& errorCode, udp::resolver::iterator endpointIterator) {
+                    timer->cancel();
 
-			boost::mutex::scoped_lock l(socketMutex);
+                    if (!errorCode) {
+                        SendToPostResolveHandler(resolver, endpointIterator, buf, strlen(buf), errorCode, handlerLock);
+                    } else {
+                        boost::mutex::scoped_lock l(socketMutex);
+                        if (socket) callbackHandler.AddCallback(new Callback(CallbackEvent_Error, this, SM_ErrorType_NO_HOST, errorCode.value()));
+                        delete resolver;
+                        delete[] buf;
+                        delete handlerLock;
+                    }
+                });
 
-			if (socket) {
-				socket->send_to(boost::asio::buffer(data, data.length()), *endpointIterator);
-			} else {
-				throw std::logic_error("Operation cancelled.");
-			}
-		}
+            timer->async_wait([this, resolver, buf, handlerLock](const boost::system::error_code& errorCode) {
+                if (!errorCode) {
+                    resolver->cancel();
+                    boost::mutex::scoped_lock l(socketMutex);
+                    if (socket) callbackHandler.AddCallback(new Callback(CallbackEvent_Error, this, SM_ErrorType_NO_HOST, boost::asio::error::host_not_found));
+                    delete resolver;
+                    delete[] buf;
+                    delete handlerLock;
+                }
+            });
 
-		return true;
-	} catch (std::exception&) {
-		if (resolver) delete resolver;
-		if (buf) delete[] buf;
-		if (handlerLock) delete handlerLock;
-	}
+        } else {
+            udp::resolver syncResolver(*socketHandler.ioService);
 
-	return false;
+            udp::resolver::iterator endpointIterator = syncResolver.resolve(udp::resolver::query(udp::v4(), hostname, sPort));
+
+            boost::mutex::scoped_lock l(socketMutex);
+
+            if (socket) {
+                socket->send_to(boost::asio::buffer(data, data.length()), *endpointIterator);
+            } else {
+                throw std::logic_error("Operation cancelled.");
+            }
+        }
+
+        return true;
+    } catch (std::exception&) {
+        if (resolver) delete resolver;
+        if (buf) delete[] buf;
+        if (handlerLock) delete handlerLock;
+    }
+
+    return false;
 }
 
 template <class SocketType>
