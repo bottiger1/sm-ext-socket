@@ -8,6 +8,8 @@
 
 using namespace boost::asio::ip;
 
+static bool g_shutdown;
+
 SocketWrapper::~SocketWrapper() {
 	switch (socketType) {
 		case SM_SocketType_Tcp:
@@ -43,6 +45,7 @@ SocketHandler::~SocketHandler() {
 }
 
 void SocketHandler::Shutdown() {
+	g_shutdown = true;
 	boost::mutex::scoped_lock l(socketListMutex);
 
 	for (std::deque<SocketWrapper*>::iterator it=socketList.begin(); it!=socketList.end(); it++) {
@@ -102,7 +105,15 @@ void SocketHandler::StopProcessing() {
 void SocketHandler::RunIoService() {
 	//boost::asio::io_service::work work(*ioService);
 	ioServiceWork = new boost::asio::io_service::work(*ioService);
-	ioService->run();
+	//ioService->run();
+	while(!g_shutdown)
+	{
+		size_t executed = ioService->poll();
+		if(executed == 0)
+		{
+			usleep(50000);
+		}
+	}
 }
 
 SocketWrapper* SocketHandler::GetSocketWrapper(const void* socket) {

@@ -32,44 +32,107 @@ Socket<SocketType>::Socket(SM_SocketType st,
 	}
 }
 
+/*
 template <class SocketType>
 Socket<SocketType>::~Socket() {
-	if (socket) {
-		boost::mutex::scoped_lock l(socketMutex);
-		socket->close();
-		
-		delete socket;
-		socket = NULL;
-	}
+    if (socket) {
+        boost::mutex::scoped_lock l(socketMutex);
+        socket->close();
+        
+        delete socket;
+        socket = NULL;
+    }
 
-	if (tcpAcceptor) {
-		boost::mutex::scoped_lock l(*tcpAcceptorMutex);
-		tcpAcceptor->close();
-		
-		delete tcpAcceptor;
-		tcpAcceptor = NULL;
-	}
-	
-	if (localEndpoint) {
-		boost::mutex::scoped_lock l(*localEndpointMutex);
-		
-		delete localEndpoint;
-		localEndpoint = NULL;
-	}
+    if (tcpAcceptor) {
+        boost::mutex::scoped_lock l(*tcpAcceptorMutex);
+        tcpAcceptor->close();
+        
+        delete tcpAcceptor;
+        tcpAcceptor = NULL;
+    }
+    
+    if (localEndpoint) {
+        boost::mutex::scoped_lock l(*localEndpointMutex);
+        
+        delete localEndpoint;
+        localEndpoint = NULL;
+    }
 
-	// wait for all callbacks to terminate
-	//boost::unique_lock<boost::shared_mutex> l(handlerMutex);
-	handlerMutex.lock();
+    // wait for all callbacks to terminate
+    //boost::unique_lock<boost::shared_mutex> l(handlerMutex);
+    handlerMutex.lock();
 
-	boost::mutex::scoped_lock socketLock(socketMutex);
+    boost::mutex::scoped_lock socketLock(socketMutex);
 
-	if (tcpAcceptorMutex) delete tcpAcceptorMutex;
-	if (localEndpointMutex) delete localEndpointMutex;
+    if (tcpAcceptorMutex) delete tcpAcceptorMutex;
+    if (localEndpointMutex) delete localEndpointMutex;
 
-	while (!socketOptionQueue.empty()) {
-		delete socketOptionQueue.front();
-		socketOptionQueue.pop();
-	}
+    while (!socketOptionQueue.empty()) {
+        delete socketOptionQueue.front();
+        socketOptionQueue.pop();
+    }
+}*/
+
+template <class SocketType>
+Socket<SocketType>::~Socket() {
+    //
+    // 1) Cancel all outstanding async operations
+    //
+    {
+        boost::mutex::scoped_lock lk(socketMutex);
+        if (socket) {
+            boost::system::error_code ec;
+            socket->cancel(ec);
+        }
+    }
+    if (tcpAcceptor) {
+        boost::mutex::scoped_lock lk(*tcpAcceptorMutex);
+        boost::system::error_code ec;
+        tcpAcceptor->cancel(ec);
+    }
+    //
+    // 2) Wait for all outstanding handlers to finish
+    //
+    {
+        // this will block until every shared_lock on handlerMutex is gone
+        boost::unique_lock<boost::shared_mutex> hlk(handlerMutex);
+        // once we have the exclusive lock we know no more handlers are running
+    } // hlk goes out of scope and unlocks
+    //
+    // 3) Now it is safe to tear everything down under socketMutex etc.
+    //
+    if (socket) {
+        boost::mutex::scoped_lock lk(socketMutex);
+        boost::system::error_code ec;
+        socket->close(ec);
+        delete socket;
+        socket = nullptr;
+    }
+    if (tcpAcceptor) {
+        boost::mutex::scoped_lock lk(*tcpAcceptorMutex);
+        boost::system::error_code ec;
+        tcpAcceptor->close(ec);
+        delete tcpAcceptor;
+        tcpAcceptor = nullptr;
+    }
+    if (localEndpoint) {
+        boost::mutex::scoped_lock lk(*localEndpointMutex);
+        delete localEndpoint;
+        localEndpoint = nullptr;
+    }
+    // finally delete the mutexes themselves and any leftover options
+    if (tcpAcceptorMutex) {
+        delete tcpAcceptorMutex;
+        tcpAcceptorMutex = nullptr;
+    }
+    if (localEndpointMutex) {
+        delete localEndpointMutex;
+        localEndpointMutex = nullptr;
+    }
+    while (!socketOptionQueue.empty()) {
+        delete socketOptionQueue.front();
+        socketOptionQueue.pop();
+    }
 }
 
 template <class SocketType>
