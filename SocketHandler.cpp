@@ -108,7 +108,7 @@ void SocketHandler::RunIoService() {
 	//ioService->run();
 	while(!g_shutdown)
 	{
-		size_t executed = ioService->poll();
+		size_t executed = ioService->poll_one();
 		if(executed == 0)
 		{
 			usleep(50000);
