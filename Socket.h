@@ -27,6 +27,7 @@ public:
 	bool Send(const std::string &data, bool async = true);
 	bool SendTo(const std::string &data, const char *hostname, uint16_t port, bool async = true);
 	bool SetOption(SM_SocketOption so, int value, bool lock = true);
+	void Destroy();
 
 	IPluginFunction *connectCallback;
 	IPluginFunction *incomingCallback;
@@ -57,6 +58,9 @@ private:
 	//void InitializeResolver();
 	void InitializeSocket();
 
+	void AddRef();
+	void RemoveRef();
+
 	SM_SocketType sm_sockettype;
 	std::queue<SocketOption *> socketOptionQueue;
 
@@ -69,4 +73,6 @@ private:
 	boost::mutex *tcpAcceptorMutex;
 
 	boost::shared_mutex handlerMutex;
+	
+	std::atomic<int> m_async_count;
 };
