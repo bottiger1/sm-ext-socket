@@ -117,9 +117,9 @@ cell_t SocketBind(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			return ((Socket<tcp>*) sw->socket)->Bind(hostname, params[3], false);
+			return ((Socket<tcp>*) sw->socket)->Bind(hostname, params[3]);
 		case SM_SocketType_Udp:
-			return ((Socket<udp>*) sw->socket)->Bind(hostname, params[3], false);
+			return ((Socket<udp>*) sw->socket)->Bind(hostname, params[3]);
 		default:
 			return false;
 	}

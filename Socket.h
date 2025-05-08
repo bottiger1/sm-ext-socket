@@ -20,12 +20,12 @@ public:
 
 	bool IsOpen();
 
-	bool Bind(const char *hostname, uint16_t port, bool async = true);
-	bool Connect(const char *hostname, uint16_t port, bool async = true);
+	bool Bind(const char *hostname, uint16_t port);
+	bool Connect(const char *hostname, uint16_t port);
 	bool Disconnect();
 	bool Listen();
-	bool Send(const std::string &data, bool async = true);
-	bool SendTo(const std::string &data, const char *hostname, uint16_t port, bool async = true);
+	bool Send(const std::string &data);
+	bool SendTo(const std::string &data, const char *hostname, uint16_t port);
 	bool SetOption(SM_SocketOption so, int value, bool lock = true);
 	void Destroy();
 
@@ -42,8 +42,6 @@ public:
 
 private:
 	void ReceiveHandler(char *buf, size_t bufferSize, size_t bytes, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
-
-	void BindPostResolveHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
 
 	void ConnectPostResolveHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
 	void ConnectPostConnectHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
