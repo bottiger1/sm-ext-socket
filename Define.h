@@ -14,7 +14,6 @@ enum SM_ErrorType {
 enum SM_SocketType {
 	SM_SocketType_Tcp = 1,
 	SM_SocketType_Udp,
-	//SM_SocketType_Icmp,
 };
 
 enum SM_SocketOption {
@@ -39,12 +38,6 @@ enum SM_SocketOption {
 	SM_SO_DebugMode
 };
 
-struct SocketOption {
-	SocketOption(SM_SocketOption so, int value) : option(so), value(value) {}
-	SM_SocketOption option;
-	int value;
-};
-
 enum CallbackEvent {
 	CallbackEvent_Connect = 0,
 	CallbackEvent_Disconnect,
@@ -55,4 +48,3 @@ enum CallbackEvent {
 };
 
 #endif
-

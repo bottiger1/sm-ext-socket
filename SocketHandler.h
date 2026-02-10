@@ -1,17 +1,21 @@
 #ifndef INC_SEXT_SOCKETHANDLER_H
 #define INC_SEXT_SOCKETHANDLER_H
 
-#include <deque>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
+
 #include <boost/asio.hpp>
 #include <boost/thread.hpp>
 
 #include "Socket.h"
 
 struct SocketWrapper {
-	SocketWrapper(void* socket, SM_SocketType socketType) : socket(socket), socketType(socketType) {}
-	~SocketWrapper();
+	SocketWrapper(std::shared_ptr<void> socket, SM_SocketType socketType)
+		: socket(std::move(socket)), socketType(socketType) {}
 
-	void* socket;
+	std::shared_ptr<void> socket;
 	SM_SocketType socketType;
 };
 
@@ -21,31 +25,32 @@ public:
 	~SocketHandler();
 
 	void Shutdown();
-
-	SocketWrapper* GetSocketWrapper(const void* socket);
-
-	template <class SocketType> Socket<SocketType>* CreateSocket(SM_SocketType st);
-	void DestroySocket(SocketWrapper* sw);
-
 	void StartProcessing();
-	void StopProcessing();
 
-	//friend class Socket;
-	boost::asio::io_context* ioService;
+	template <class SocketType>
+	std::pair<std::shared_ptr<Socket<SocketType>>, SocketWrapper*> CreateSocket(SM_SocketType st);
+
+	std::pair<std::shared_ptr<void>, SocketWrapper*> CreateSocketFromAccepted(
+		SM_SocketType st, boost::asio::ip::tcp::socket&& acceptedSocket);
+
+	void DestroySocket(SocketWrapper* sw);
+	void SetChildHandle(SocketWrapper* sw, int32_t handle);
+
+	boost::asio::io_context& GetIoContext() { return ioContext_; }
 
 private:
-	std::deque<SocketWrapper*> socketList;
-	boost::mutex socketListMutex;
-
-	boost::asio::io_context::work* ioServiceWork;
-
-	boost::thread* ioServiceProcessingThread;
-	bool ioServiceProcessingThreadInitialized;
-
 	void RunIoService();
+
+	boost::asio::io_context ioContext_;
+	std::unique_ptr<boost::asio::io_context::work> ioWork_;
+
+	std::unordered_map<SocketWrapper*, std::unique_ptr<SocketWrapper>> sockets_;
+	std::mutex socketsMutex_;
+
+	std::unique_ptr<boost::thread> ioThread_;
+	bool ioThreadStarted_ = false;
 };
 
 extern SocketHandler socketHandler;
 
 #endif
-

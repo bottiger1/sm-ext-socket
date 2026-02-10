@@ -18,4 +18,3 @@ public:
 extern Extension extension;
 
 #endif
-

@@ -1,61 +1,27 @@
 #include "CallbackHandler.h"
 
-#include <iostream>
-
 #include "Callback.h"
 
-void CallbackHandler::AddCallback(Callback* callback) {
-	boost::mutex::scoped_lock l(callbackQueueMutex);
-
-	if (!callback->IsValid()) {
-		std::cout << "[SERR] invalid callback (event=" << callback->callbackEvent << ")" << std::endl;
-		delete callback;
-	} else {
-		callbackQueue.push_back(callback);
-	}
-}
-
-void CallbackHandler::RemoveCallbacks(SocketWrapper* sw) {
-	boost::mutex::scoped_lock l(callbackQueueMutex);
-
-	for (std::deque<Callback*>::iterator it=callbackQueue.begin(); it!=callbackQueue.end(); ) {
-		if ((*it)->socketWrapper == sw) {
-			/*if (!(*it)->isExecuting)*/ delete *it;
-			it = callbackQueue.erase(it);
-		} else {
-			it++;
-		}
-	}
+void CallbackHandler::AddCallback(std::unique_ptr<Callback> callback) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	callbackQueue_.push_back(std::move(callback));
 }
 
 void CallbackHandler::ExecuteQueuedCallbacks() {
-	Callback* cb = FetchFirstCallback();
-	if (!cb) return;
-
-//	cb->isExecuting = true;
-	cb->Execute();
-	delete cb;
-}
-
-Callback* CallbackHandler::FetchFirstCallback() {
-	boost::mutex::scoped_lock l(callbackQueueMutex);
-
-	if (!callbackQueue.empty()) {
-		for (std::deque<Callback*>::iterator it=callbackQueue.begin(); it!=callbackQueue.end(); it++) {
-			Callback* ret = callbackQueue.front();
-
-			if (!ret->IsExecutable()) {
-				std::cout << "[SERR] callback not executable (event=" << ret->callbackEvent << ")" << std::endl;
-				continue;
-			}
-
-			callbackQueue.erase(it);
-			return ret;
-		}
+	std::deque<std::unique_ptr<Callback>> local;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		local.swap(callbackQueue_);
 	}
 
-	return NULL;
+	for (auto& cb : local) {
+		cb->Execute();
+	}
+}
+
+void CallbackHandler::Flush() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	callbackQueue_.clear();
 }
 
 CallbackHandler callbackHandler;
-

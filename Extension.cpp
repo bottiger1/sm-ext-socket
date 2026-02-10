@@ -24,7 +24,6 @@ bool Extension::SDK_OnLoad(char *error, size_t err_max, bool late) {
 	sharesys->AddNatives(myself, smsock_natives);
 	socketHandleType = handlesys->CreateType("Socket", this, 0, NULL, NULL, myself->GetIdentity(), NULL);
 
-	//if (_debug) smutils->LogError(myself, "[Debug] Extension loaded");
 	socketHandler.StartProcessing();
 
 	return true;
@@ -62,9 +61,9 @@ cell_t SocketIsConnected(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			return ((Socket<tcp>*) sw->socket)->IsOpen();
+			return std::static_pointer_cast<Socket<tcp>>(sw->socket)->IsOpen();
 		case SM_SocketType_Udp:
-			return ((Socket<udp>*) sw->socket)->IsOpen();
+			return std::static_pointer_cast<Socket<udp>>(sw->socket)->IsOpen();
 		default:
 			return false;
 	}
@@ -80,25 +79,25 @@ cell_t SocketCreate(IPluginContext *pContext, const cell_t *params) {
 
 	switch (params[1]) {
 		case SM_SocketType_Tcp: {
-			Socket<tcp>* socket = socketHandler.CreateSocket<tcp>(SM_SocketType_Tcp);
-			SocketWrapper* sw = socketHandler.GetSocketWrapper(socket);
+			auto result = socketHandler.CreateSocket<tcp>(SM_SocketType_Tcp);
+			auto socket = result.first;
+			SocketWrapper* sw = result.second;
 
 			handle = handlesys->CreateHandle(extension.socketHandleType, sw, pContext->GetIdentity(), myself->GetIdentity(), NULL);
 
 			socket->smHandle = handle;
 			socket->errorCallback = pContext->GetFunctionById(params[2]);
-
 			break;
 		}
 		case SM_SocketType_Udp: {
-			Socket<udp>* socket = socketHandler.CreateSocket<udp>(SM_SocketType_Udp);
-			SocketWrapper* sw = socketHandler.GetSocketWrapper(socket);
+			auto result = socketHandler.CreateSocket<udp>(SM_SocketType_Udp);
+			auto socket = result.first;
+			SocketWrapper* sw = result.second;
 
 			handle = handlesys->CreateHandle(extension.socketHandleType, sw, pContext->GetIdentity(), myself->GetIdentity(), NULL);
 
 			socket->smHandle = handle;
 			socket->errorCallback = pContext->GetFunctionById(params[2]);
-
 			break;
 		}
 	}
@@ -117,9 +116,9 @@ cell_t SocketBind(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			return ((Socket<tcp>*) sw->socket)->Bind(hostname, params[3]);
+			return std::static_pointer_cast<Socket<tcp>>(sw->socket)->Bind(hostname, params[3]);
 		case SM_SocketType_Udp:
-			return ((Socket<udp>*) sw->socket)->Bind(hostname, params[3]);
+			return std::static_pointer_cast<Socket<udp>>(sw->socket)->Bind(hostname, params[3]);
 		default:
 			return false;
 	}
@@ -129,7 +128,6 @@ cell_t SocketBind(IPluginContext *pContext, const cell_t *params) {
 cell_t SocketConnect(IPluginContext *pContext, const cell_t *params) {
 	SocketWrapper* sw = extension.GetSocketWrapperByHandle(static_cast<Handle_t>(params[1]));
 	if (sw == NULL) return pContext->ThrowNativeError("Invalid handle: %i", params[1]);
-	//if (socket->shouldListen()) return pContext->ThrowNativeError("You can't connect a listening socket");
 	if (!pContext->GetFunctionById(params[2])) return pContext->ThrowNativeError("Invalid connect callback specified");
 	if (!pContext->GetFunctionById(params[3])) return pContext->ThrowNativeError("Invalid receive callback specified");
 	if (!pContext->GetFunctionById(params[4])) return pContext->ThrowNativeError("Invalid disconnect callback specified");
@@ -140,7 +138,7 @@ cell_t SocketConnect(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp: {
-			Socket<tcp>* socket = (Socket<tcp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
 			if (socket->IsOpen()) return pContext->ThrowNativeError("Socket is already connected");
 
 			socket->connectCallback = pContext->GetFunctionById(params[2]);
@@ -150,7 +148,7 @@ cell_t SocketConnect(IPluginContext *pContext, const cell_t *params) {
 			return socket->Connect(hostname, params[6]);
 		}
 		case SM_SocketType_Udp: {
-			Socket<udp>* socket = (Socket<udp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
 			if (socket->IsOpen()) return pContext->ThrowNativeError("Socket is already connected");
 
 			socket->connectCallback = pContext->GetFunctionById(params[2]);
@@ -171,12 +169,12 @@ cell_t SocketDisconnect(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp: {
-			Socket<tcp>* socket = (Socket<tcp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
 			if (!socket->IsOpen()) return pContext->ThrowNativeError("Socket is not connected/listening");
 			return socket->Disconnect();
 		}
 		case SM_SocketType_Udp: {
-			Socket<udp>* socket = (Socket<udp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
 			if (!socket->IsOpen()) return pContext->ThrowNativeError("Socket is not connected/listening");
 			return socket->Disconnect();
 		}
@@ -192,22 +190,10 @@ cell_t SocketListen(IPluginContext *pContext, const cell_t *params) {
 	if (sw->socketType != SM_SocketType_Tcp) return pContext->ThrowNativeError("The socket must use the TCP/SOCK_STREAM protocol");
 	if (!pContext->GetFunctionById(params[2])) return pContext->ThrowNativeError("Invalid incoming callback specified");
 
-	switch (sw->socketType) {
-		case SM_SocketType_Tcp: {
-			Socket<tcp>* socket = (Socket<tcp>*) sw->socket;
-			if (socket->IsOpen()) return pContext->ThrowNativeError("Socket is already open");
-			socket->incomingCallback = pContext->GetFunctionById(params[2]);
-			return socket->Listen();
-		}
-		case SM_SocketType_Udp: {
-			Socket<udp>* socket = (Socket<udp>*) sw->socket;
-			if (socket->IsOpen()) return pContext->ThrowNativeError("Socket is already open");
-			socket->incomingCallback = pContext->GetFunctionById(params[2]);
-			return socket->Listen();
-		}
-		default:
-			return false;
-	}
+	auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
+	if (socket->IsOpen()) return pContext->ThrowNativeError("Socket is already open");
+	socket->incomingCallback = pContext->GetFunctionById(params[2]);
+	return socket->Listen();
 }
 
 // native SocketSend(Handle:socket, String:command[], size);
@@ -228,14 +214,13 @@ cell_t SocketSend(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp: {
-			Socket<tcp>* socket = (Socket<tcp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
 			if (!socket->IsOpen()) return pContext->ThrowNativeError("Can't send, socket is not connected");
 			return socket->Send(data);
 		}
 		case SM_SocketType_Udp: {
-			Socket<udp>* socket = (Socket<udp>*) sw->socket;
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
 			if (!socket->IsOpen()) return pContext->ThrowNativeError("Can't send, socket is not connected");
-			socket->incomingCallback = pContext->GetFunctionById(params[2]);
 			return socket->Send(data);
 		}
 		default:
@@ -265,9 +250,7 @@ cell_t SocketSendTo(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Udp: {
-			Socket<udp>* socket = (Socket<udp>*) sw->socket;
-			//if (!socket->IsOpen()) return pContext->ThrowNativeError("Can't send, socket is not connected");
-			socket->incomingCallback = pContext->GetFunctionById(params[2]);
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
 			return socket->SendTo(data, hostname, params[5]);
 		}
 		default:
@@ -285,40 +268,16 @@ cell_t SocketSetOption(IPluginContext *pContext, const cell_t *params) {
 		if (sw == NULL) return pContext->ThrowNativeError("Invalid handle: %i", params[1]);
 
 		switch (sw->socketType) {
-			case SM_SocketType_Tcp: {
-				return ((Socket<tcp>*) sw->socket)->SetOption((SM_SocketOption) params[2], params[3]);
-			}
-			case SM_SocketType_Udp: {
-				return ((Socket<udp>*) sw->socket)->SetOption((SM_SocketOption) params[2], params[3]);
-			}
+			case SM_SocketType_Tcp:
+				return std::static_pointer_cast<Socket<tcp>>(sw->socket)->SetOption((SM_SocketOption) params[2], params[3]);
+			case SM_SocketType_Udp:
+				return std::static_pointer_cast<Socket<udp>>(sw->socket)->SetOption((SM_SocketOption) params[2], params[3]);
 			default:
 				return false;
 		}
 	} else {
 		return false;
 	}
-
-#if 0
-	switch (params[2]) {
-		case ConcatenateCallbacks:
-			socket->setOption(ConcatenateCallbacks, value);
-			return 1;
-		case ForceFrameLock:
-			callbacks->setOption(ForceFrameLock, value);
-			return 1;
-		case CallbacksPerFrame:
-			if (value > 0) {
-				callbacks->setOption(CallbacksPerFrame, value);
-				return 1;
-			} else {
-				return 0;
-			}
-		case DebugMode:
-			sockets._debug = value != 0;
-			return 1;
-...
-	}
-#endif
 }
 
 
@@ -329,10 +288,11 @@ cell_t SocketSetReceiveCallback(IPluginContext *pContext, const cell_t *params) 
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			((Socket<tcp>*) sw->socket)->receiveCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->receiveCallback = pContext->GetFunctionById(params[2]);
 			break;
 		case SM_SocketType_Udp:
-			((Socket<udp>*) sw->socket)->receiveCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->receiveCallback = pContext->GetFunctionById(params[2]);
+			break;
 		default:
 			return false;
 	}
@@ -348,19 +308,47 @@ cell_t SocketSetSendqueueEmptyCallback(IPluginContext *pContext, const cell_t *p
 	bool forceSendqueueEmptyCallback = false;
 
 	switch (sw->socketType) {
-		case SM_SocketType_Tcp:
-			((Socket<tcp>*) sw->socket)->sendqueueEmptyCallback = pContext->GetFunctionById((params[2]));
-			if (!((Socket<tcp>*) sw->socket)->sendQueueLength) forceSendqueueEmptyCallback = true;
+		case SM_SocketType_Tcp: {
+			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
+			socket->sendqueueEmptyCallback = pContext->GetFunctionById(params[2]);
+			if (!socket->sendQueueLength) forceSendqueueEmptyCallback = true;
 			break;
-		case SM_SocketType_Udp:
-			((Socket<udp>*) sw->socket)->sendqueueEmptyCallback = pContext->GetFunctionById((params[2]));
-			if (!((Socket<tcp>*) sw->socket)->sendQueueLength) forceSendqueueEmptyCallback = true;
+		}
+		case SM_SocketType_Udp: {
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
+			socket->sendqueueEmptyCallback = pContext->GetFunctionById(params[2]);
+			if (!socket->sendQueueLength) forceSendqueueEmptyCallback = true;
+			break;
+		}
 		default:
 			return false;
 	}
 
 	if (forceSendqueueEmptyCallback) {
-		callbackHandler.AddCallback(new Callback(CallbackEvent_SendQueueEmpty, sw->socket));
+		int32_t handle = 0;
+		IPluginFunction* func = nullptr;
+		int32_t arg = 0;
+
+		switch (sw->socketType) {
+			case SM_SocketType_Tcp: {
+				auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
+				handle = socket->smHandle;
+				func = socket->sendqueueEmptyCallback;
+				arg = socket->smCallbackArg;
+				break;
+			}
+			case SM_SocketType_Udp: {
+				auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
+				handle = socket->smHandle;
+				func = socket->sendqueueEmptyCallback;
+				arg = socket->smCallbackArg;
+				break;
+			}
+		}
+
+		if (func) {
+			callbackHandler.AddCallback(Callback::MakeSendQueueEmpty(handle, func, arg));
+		}
 	}
 
 	return true;
@@ -373,10 +361,11 @@ cell_t SocketSetDisconnectCallback(IPluginContext *pContext, const cell_t *param
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			((Socket<tcp>*) sw->socket)->disconnectCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->disconnectCallback = pContext->GetFunctionById(params[2]);
 			break;
 		case SM_SocketType_Udp:
-			((Socket<udp>*) sw->socket)->disconnectCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->disconnectCallback = pContext->GetFunctionById(params[2]);
+			break;
 		default:
 			return false;
 	}
@@ -391,10 +380,11 @@ cell_t SocketSetErrorCallback(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			((Socket<tcp>*) sw->socket)->errorCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->errorCallback = pContext->GetFunctionById(params[2]);
 			break;
 		case SM_SocketType_Udp:
-			((Socket<udp>*) sw->socket)->errorCallback = pContext->GetFunctionById((params[2]));
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->errorCallback = pContext->GetFunctionById(params[2]);
+			break;
 		default:
 			return false;
 	}
@@ -410,10 +400,11 @@ cell_t SocketSetArg(IPluginContext *pContext, const cell_t *params) {
 
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp:
-			((Socket<tcp>*) sw->socket)->smCallbackArg = params[2];
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->smCallbackArg = params[2];
 			break;
 		case SM_SocketType_Udp:
-			((Socket<udp>*) sw->socket)->smCallbackArg = params[2];
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->smCallbackArg = params[2];
+			break;
 		default:
 			return false;
 	}
@@ -425,10 +416,10 @@ cell_t SocketSetArg(IPluginContext *pContext, const cell_t *params) {
 cell_t SocketGetHostName(IPluginContext *pContext, const cell_t *params) {
 	char* dest = NULL;
 	pContext->LocalToString(params[1], &dest);
-	
+
 	boost::system::error_code errorCode;
 	std::string hostName = host_name(errorCode);
-	
+
 	if (!errorCode) {
 		size_t len = hostName.copy(dest, params[2]-1);
 		dest[len] = '\0';

@@ -1,114 +1,122 @@
 #include "SocketHandler.h"
 
-#include <assert.h>
-#include <boost/asio.hpp>
-#include <boost/bind.hpp>
-
 #include "CallbackHandler.h"
 
 using namespace boost::asio::ip;
 
-SocketWrapper::~SocketWrapper() {
-	switch (socketType) {
-		case SM_SocketType_Tcp:
-			((Socket<tcp>*) socket)->Destroy();
-			break;
-		case SM_SocketType_Udp:
-			((Socket<udp>*) socket)->Destroy();
-			break;
-	}
-
-	callbackHandler.RemoveCallbacks(this);
-}
-
-template Socket<tcp>* SocketHandler::CreateSocket<tcp>(SM_SocketType);
-template Socket<udp>* SocketHandler::CreateSocket<udp>(SM_SocketType);
-
-SocketHandler::SocketHandler() : ioServiceProcessingThreadInitialized(false) {
-	ioService = new boost::asio::io_service();
-}
+SocketHandler::SocketHandler() {}
 
 SocketHandler::~SocketHandler() {
-	if (!socketList.empty() || ioServiceProcessingThreadInitialized) {
+	if (!sockets_.empty() || ioThreadStarted_) {
 		Shutdown();
 	}
-#ifndef WIN32
-	delete ioService;
-#endif
 }
 
 void SocketHandler::Shutdown() {
-	boost::mutex::scoped_lock l(socketListMutex);
+	{
+		std::lock_guard<std::mutex> lock(socketsMutex_);
 
-	for (std::deque<SocketWrapper*>::iterator it=socketList.begin(); it!=socketList.end(); it++) {
-		delete *it;
-	}
-
-	socketList.clear();
-
-	if (ioServiceProcessingThreadInitialized) StopProcessing();
-}
-
-template <class SocketType>
-Socket<SocketType>* SocketHandler::CreateSocket(SM_SocketType st) {
-	boost::mutex::scoped_lock l(socketListMutex);
-
-	SocketWrapper* sp = new SocketWrapper(new Socket<SocketType>(st), st);
-	socketList.push_back(sp);
-
-	return (Socket<SocketType>*) sp->socket;
-}
-
-void SocketHandler::DestroySocket(SocketWrapper* sw) {
-	assert(sw);
-
-	{ // lock
-		boost::mutex::scoped_lock l(socketListMutex);
-
-		for (std::deque<SocketWrapper*>::iterator it=socketList.begin(); it!=socketList.end(); it++) {
-			if (*it == sw) {
-				socketList.erase(it);
-				break;
+		for (auto& pair : sockets_) {
+			SocketWrapper* sw = pair.second.get();
+			switch (sw->socketType) {
+				case SM_SocketType_Tcp:
+					std::static_pointer_cast<Socket<tcp>>(sw->socket)->Destroy();
+					break;
+				case SM_SocketType_Udp:
+					std::static_pointer_cast<Socket<udp>>(sw->socket)->Destroy();
+					break;
 			}
 		}
-	} // ~lock
+		sockets_.clear();
+	}
 
-	delete sw;
+	if (ioThreadStarted_) {
+		ioContext_.stop();
+		ioThread_->join();
+		ioThreadStarted_ = false;
+		ioThread_.reset();
+		ioWork_.reset();
+	}
+
+	callbackHandler.Flush();
 }
 
 void SocketHandler::StartProcessing() {
-	assert(!ioServiceProcessingThreadInitialized);
-
-	ioServiceProcessingThread = new boost::thread(boost::bind(&SocketHandler::RunIoService, this));
-	ioServiceProcessingThreadInitialized = true;
-}
-
-void SocketHandler::StopProcessing() {
-	assert(ioServiceProcessingThreadInitialized);
-
-	ioService->stop();
-	delete ioServiceWork;
-	ioServiceProcessingThread->join();
-
-	ioServiceProcessingThreadInitialized = false;
-	delete ioServiceProcessingThread;
+	ioThread_ = std::make_unique<boost::thread>(&SocketHandler::RunIoService, this);
+	ioThreadStarted_ = true;
 }
 
 void SocketHandler::RunIoService() {
-	//boost::asio::io_service::work work(*ioService);
-	ioServiceWork = new boost::asio::io_service::work(*ioService);
-	ioService->run();
+	ioWork_ = std::make_unique<boost::asio::io_context::work>(ioContext_);
+	ioContext_.run();
 }
 
-SocketWrapper* SocketHandler::GetSocketWrapper(const void* socket) {
-	boost::mutex::scoped_lock l(socketListMutex);
+template <class SocketType>
+std::pair<std::shared_ptr<Socket<SocketType>>, SocketWrapper*> SocketHandler::CreateSocket(SM_SocketType st) {
+	std::lock_guard<std::mutex> lock(socketsMutex_);
 
-	for (std::deque<SocketWrapper*>::iterator it=socketList.begin(); it!=socketList.end(); it++) {
-		if ((*it)->socket == socket) return *it;
+	auto socket = Socket<SocketType>::Create(ioContext_, st);
+	auto wrapper = std::make_unique<SocketWrapper>(socket, st);
+	SocketWrapper* rawPtr = wrapper.get();
+	socket->wrapper_ = rawPtr;
+	sockets_[rawPtr] = std::move(wrapper);
+
+	return {socket, rawPtr};
+}
+
+std::pair<std::shared_ptr<void>, SocketWrapper*> SocketHandler::CreateSocketFromAccepted(
+	SM_SocketType st, tcp::socket&& acceptedSocket) {
+	std::lock_guard<std::mutex> lock(socketsMutex_);
+
+	auto socket = Socket<tcp>::CreateFromAccepted(ioContext_, st, std::move(acceptedSocket));
+	auto wrapper = std::make_unique<SocketWrapper>(socket, st);
+	SocketWrapper* rawPtr = wrapper.get();
+	socket->wrapper_ = rawPtr;
+	sockets_[rawPtr] = std::move(wrapper);
+
+	return {socket, rawPtr};
+}
+
+void SocketHandler::DestroySocket(SocketWrapper* sw) {
+	if (!sw) return;
+
+	std::unique_ptr<SocketWrapper> owned;
+	{
+		std::lock_guard<std::mutex> lock(socketsMutex_);
+		auto it = sockets_.find(sw);
+		if (it != sockets_.end()) {
+			owned = std::move(it->second);
+			sockets_.erase(it);
+		}
 	}
 
-	return NULL;
+	if (owned) {
+		switch (owned->socketType) {
+			case SM_SocketType_Tcp:
+				std::static_pointer_cast<Socket<tcp>>(owned->socket)->Destroy();
+				break;
+			case SM_SocketType_Udp:
+				std::static_pointer_cast<Socket<udp>>(owned->socket)->Destroy();
+				break;
+		}
+	}
 }
 
-SocketHandler socketHandler;
+void SocketHandler::SetChildHandle(SocketWrapper* sw, int32_t handle) {
+	if (!sw) return;
 
+	switch (sw->socketType) {
+		case SM_SocketType_Tcp:
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->smHandle = handle;
+			break;
+		case SM_SocketType_Udp:
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->smHandle = handle;
+			break;
+	}
+}
+
+// Explicit template instantiations
+template std::pair<std::shared_ptr<Socket<tcp>>, SocketWrapper*> SocketHandler::CreateSocket<tcp>(SM_SocketType);
+template std::pair<std::shared_ptr<Socket<udp>>, SocketWrapper*> SocketHandler::CreateSocket<udp>(SM_SocketType);
+
+SocketHandler socketHandler;

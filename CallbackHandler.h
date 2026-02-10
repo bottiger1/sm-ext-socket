@@ -2,30 +2,22 @@
 #define INC_SEXT_CALLBACKHANDLER_H
 
 #include <deque>
-#include <boost/thread.hpp>
+#include <memory>
+#include <mutex>
 
 class Callback;
-struct SocketWrapper;
 
-/**
- * manages the callbacks for asynchronous operations.
- *
- * @note No destructor, objects will be freed by ~SocketHandler -> ~SocketWrapper -> CallbackHandler::RemoveCallbacks
- */
 class CallbackHandler {
 public:
-	void AddCallback(Callback* callback);
-	void RemoveCallbacks(SocketWrapper* sw);
+	void AddCallback(std::unique_ptr<Callback> callback);
 	void ExecuteQueuedCallbacks();
+	void Flush();
 
 private:
-	Callback* FetchFirstCallback();
-
-	std::deque<Callback*> callbackQueue;
-	boost::mutex callbackQueueMutex;
+	std::deque<std::unique_ptr<Callback>> callbackQueue_;
+	std::mutex mutex_;
 };
 
 extern CallbackHandler callbackHandler;
 
 #endif
-

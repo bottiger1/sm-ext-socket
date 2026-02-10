@@ -1,76 +1,79 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <queue>
+#include <utility>
+#include <vector>
+
 #include <boost/asio.hpp>
-#include <boost/thread.hpp>
-#include <boost/thread/shared_mutex.hpp>
 
 #include "sdk/smsdk_ext.h"
 #include "Define.h"
 
 class SocketHandler;
+struct SocketWrapper;
 
 template <class SocketType>
-class Socket {
+class Socket : public std::enable_shared_from_this<Socket<SocketType>> {
 public:
-	Socket(SM_SocketType st, typename SocketType::socket *asioSocket = nullptr);
-	~Socket();
+	static std::shared_ptr<Socket<SocketType>> Create(boost::asio::io_context& ioc, SM_SocketType st);
+	static std::shared_ptr<Socket<SocketType>> CreateFromAccepted(boost::asio::io_context& ioc, SM_SocketType st,
+	                                                               typename SocketType::socket&& acceptedSocket);
+
+	~Socket() = default;
 
 	bool IsOpen();
 
-	bool Bind(const char *hostname, uint16_t port);
-	bool Connect(const char *hostname, uint16_t port);
+	bool Bind(const char* hostname, uint16_t port);
+	bool Connect(const char* hostname, uint16_t port);
 	bool Disconnect();
 	bool Listen();
-	bool Send(const std::string &data);
-	bool SendTo(const std::string &data, const char *hostname, uint16_t port);
-	bool SetOption(SM_SocketOption so, int value, bool lock = true);
+	bool Send(const std::string& data);
+	bool SendTo(const std::string& data, const char* hostname, uint16_t port);
+	bool SetOption(SM_SocketOption so, int value);
 	void Destroy();
 
-	IPluginFunction *connectCallback;
-	IPluginFunction *incomingCallback;
-	IPluginFunction *receiveCallback;
-	IPluginFunction *sendqueueEmptyCallback;
-	IPluginFunction *disconnectCallback;
-	IPluginFunction *errorCallback;
+	IPluginFunction* connectCallback = nullptr;
+	IPluginFunction* incomingCallback = nullptr;
+	IPluginFunction* receiveCallback = nullptr;
+	IPluginFunction* sendqueueEmptyCallback = nullptr;
+	IPluginFunction* disconnectCallback = nullptr;
+	IPluginFunction* errorCallback = nullptr;
 
-	int32_t smHandle;
-	int32_t smCallbackArg;
-	volatile unsigned int sendQueueLength;
+	int32_t smHandle = 0;
+	int32_t smCallbackArg = 0;
+	std::atomic<unsigned int> sendQueueLength{0};
+
+	SocketWrapper* wrapper_ = nullptr;
 
 private:
-	void ReceiveHandler(char *buf, size_t bufferSize, size_t bytes, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
+	Socket(boost::asio::io_context& ioc, SM_SocketType st);
+	Socket(boost::asio::io_context& ioc, SM_SocketType st, typename SocketType::socket&& acceptedSocket);
 
-	void ConnectPostResolveHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
-	void ConnectPostConnectHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
+	void StartReceive();
+	void DoReceive(std::shared_ptr<std::vector<char>> buf);
 
-	void ListenIncomingHandler(boost::asio::ip::tcp::socket *newAsioSocket, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
+	void DoAcceptLoop();
+	void HandleAccept(std::shared_ptr<boost::asio::ip::tcp::socket> newAsioSocket,
+	                  const boost::system::error_code& ec);
 
-	void SendPostSendHandler(char *buf, size_t bytes, const boost::system::error_code &err, boost::shared_lock<boost::shared_mutex> *);
-
-	void SendToPostResolveHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, char *buf, size_t bufLen, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
-	void SendToPostSendHandler(typename SocketType::resolver *, typename SocketType::resolver::iterator, char *buf, size_t bufLen, size_t bytesTransferred, const boost::system::error_code &, boost::shared_lock<boost::shared_mutex> *);
-
-	//void InitializeResolver();
 	void InitializeSocket();
+	void ApplyPendingOptions();
 
-	void AddRef();
-	void RemoveRef();
+	template <typename Settable>
+	bool ApplyOption(SM_SocketOption so, int value, Settable& target);
 
-	SM_SocketType sm_sockettype;
-	std::queue<SocketOption *> socketOptionQueue;
+	SM_SocketType smSocketType_;
+	std::vector<std::pair<SM_SocketOption, int>> pendingOptions_;
 
-	typename SocketType::socket *socket;
-	boost::mutex socketMutex;
-	//typename SocketType::resolver* resolver;
-	typename SocketType::endpoint *localEndpoint;
-	boost::mutex *localEndpointMutex;
-	boost::asio::ip::tcp::acceptor *tcpAcceptor;
-	boost::mutex *tcpAcceptorMutex;
+	boost::asio::io_context& ioc_;
+	boost::asio::io_context::strand strand_;
 
-	boost::shared_mutex handlerMutex;
-	
-	std::atomic<int> m_async_count;
+	std::unique_ptr<typename SocketType::socket> socket_;
+	std::unique_ptr<typename SocketType::endpoint> localEndpoint_;
+	std::unique_ptr<boost::asio::ip::tcp::acceptor> tcpAcceptor_;
+
+	std::atomic<bool> destroyed_{false};
 };
