@@ -21,6 +21,7 @@ Socket<SocketType>::Socket(boost::asio::io_context& ioc, SM_SocketType st,
                            typename SocketType::socket&& acceptedSocket)
 	: smSocketType_(st), ioc_(ioc), strand_(ioc) {
 	socket_ = std::make_unique<typename SocketType::socket>(std::move(acceptedSocket));
+	open_ = true;
 }
 
 // --- Factory methods ---
@@ -40,7 +41,7 @@ std::shared_ptr<Socket<SocketType>> Socket<SocketType>::CreateFromAccepted(
 
 template <class SocketType>
 bool Socket<SocketType>::IsOpen() {
-	return socket_ && socket_->is_open();
+	return open_.load();
 }
 
 template <class SocketType>
@@ -134,13 +135,20 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 
 template <class SocketType>
 bool Socket<SocketType>::Disconnect() {
-	if (!socket_) return false;
+	// Allow disconnecting either a connected socket or a listening acceptor.
+	if (!socket_ && !tcpAcceptor_) return false;
 
 	auto self = this->shared_from_this();
 	strand_.post([self]() {
 		if (self->socket_) {
 			boost::system::error_code ec;
 			self->socket_->close(ec);
+			self->open_ = false;
+		}
+		if (self->tcpAcceptor_) {
+			boost::system::error_code ec;
+			self->tcpAcceptor_->close(ec);
+			self->open_ = false;
 		}
 	});
 	return true;
@@ -159,6 +167,7 @@ bool Socket<tcp>::Listen() {
 
 		if (!tcpAcceptor_) {
 			tcpAcceptor_ = std::make_unique<tcp::acceptor>(ioc_, *localEndpoint_);
+			open_ = true;
 			ApplyPendingOptions();
 		}
 
@@ -208,7 +217,17 @@ void Socket<SocketType>::DoSend() {
 			return;
 		}
 
-		if (ec && ec != boost::asio::error::operation_aborted) {
+		if (ec == boost::asio::error::operation_aborted) {
+			// Socket was closed by Disconnect() or Destroy() while a send was in-flight.
+			// Drain the queue silently without reporting an error or firing SendQueueEmpty.
+			unsigned int drained = static_cast<unsigned int>(self->sendQueue_.size());
+			self->sendQueue_.clear();
+			self->sendQueueLength -= (1 + drained);
+			self->writing_ = false;
+			return;
+		}
+
+		if (ec) {
 			// Drain remaining queue items so sendQueueLength stays consistent
 			unsigned int drained = static_cast<unsigned int>(self->sendQueue_.size());
 			self->sendQueue_.clear();
@@ -333,6 +352,21 @@ bool Socket<udp>::SendTo(const std::string& data, const char* hostname, uint16_t
 }
 
 template <class SocketType>
+void Socket<SocketType>::SetSendqueueEmptyCallback(IPluginFunction* func) {
+	// Post to the strand so this is serialized with DoSend. This prevents the race
+	// where the game thread reads sendQueueLength==0 while DoSend is simultaneously
+	// decrementing it, which could cause the callback to fire twice.
+	auto self = this->shared_from_this();
+	strand_.post([self, func]() {
+		self->sendqueueEmptyCallback = func;
+		if (!self->writing_ && self->sendQueueLength == 0 && func) {
+			callbackHandler.AddCallback(
+				Callback::MakeSendQueueEmpty(self->smHandle, func, self->smCallbackArg));
+		}
+	});
+}
+
+template <class SocketType>
 bool Socket<SocketType>::SetOption(SM_SocketOption so, int value) {
 	if (socket_ || tcpAcceptor_) {
 		auto self = this->shared_from_this();
@@ -361,10 +395,12 @@ void Socket<SocketType>::Destroy() {
 		if (self->socket_) {
 			boost::system::error_code ec;
 			self->socket_->close(ec);
+			self->open_ = false;
 		}
 		if (self->tcpAcceptor_) {
 			boost::system::error_code ec;
 			self->tcpAcceptor_->close(ec);
+			self->open_ = false;
 		}
 	});
 }
@@ -400,6 +436,7 @@ void Socket<SocketType>::DoReceive(std::shared_ptr<std::vector<char>> buf) {
 			} else if (ec == boost::asio::error::eof ||
 			           ec == boost::asio::error::connection_reset ||
 			           ec == boost::asio::error::connection_aborted) {
+				self->open_ = false;
 				if (self->disconnectCallback) {
 					callbackHandler.AddCallback(
 						Callback::MakeDisconnect(self->smHandle, self->disconnectCallback, self->smCallbackArg));
@@ -447,10 +484,15 @@ void Socket<tcp>::HandleAccept(std::shared_ptr<tcp::socket> newAsioSocket,
 			auto childResult = socketHandler.CreateSocketFromAccepted(smSocketType_, std::move(*newAsioSocket));
 			SocketWrapper* childWrapper = childResult.second;
 
-			if (incomingCallback) {
+			IPluginFunction* cb = incomingCallback.load();
+			if (cb) {
 				callbackHandler.AddCallback(
-					Callback::MakeIncoming(smHandle, incomingCallback, smCallbackArg,
+					Callback::MakeIncoming(smHandle, cb, smCallbackArg,
 						childWrapper, remoteIP, remotePort));
+			} else {
+				// No incoming callback — destroy the child socket immediately to prevent a leak.
+				// It has no SM handle and cannot be closed by the plugin.
+				socketHandler.DestroySocket(childWrapper);
 			}
 		} catch (std::exception&) {
 			// remote_endpoint() or socket creation failed — skip this connection
@@ -480,6 +522,7 @@ void Socket<SocketType>::InitializeSocket() {
 	}
 
 	if (!socket_->is_open()) socket_->open(SocketType::v4());
+	open_ = true;
 	ApplyPendingOptions();
 }
 

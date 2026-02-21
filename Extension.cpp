@@ -305,50 +305,19 @@ cell_t SocketSetSendqueueEmptyCallback(IPluginContext *pContext, const cell_t *p
 	SocketWrapper* sw = extension.GetSocketWrapperByHandle(static_cast<Handle_t>(params[1]));
 	if (sw == NULL) return pContext->ThrowNativeError("Invalid handle: %i", params[1]);
 
-	bool forceSendqueueEmptyCallback = false;
+	IPluginFunction* func = pContext->GetFunctionById(params[2]);
 
+	// SetSendqueueEmptyCallback posts to the strand to atomically set the callback and
+	// check the queue length, avoiding the double-fire race from doing both on the game thread.
 	switch (sw->socketType) {
-		case SM_SocketType_Tcp: {
-			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
-			socket->sendqueueEmptyCallback = pContext->GetFunctionById(params[2]);
-			if (!socket->sendQueueLength) forceSendqueueEmptyCallback = true;
+		case SM_SocketType_Tcp:
+			std::static_pointer_cast<Socket<tcp>>(sw->socket)->SetSendqueueEmptyCallback(func);
 			break;
-		}
-		case SM_SocketType_Udp: {
-			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
-			socket->sendqueueEmptyCallback = pContext->GetFunctionById(params[2]);
-			if (!socket->sendQueueLength) forceSendqueueEmptyCallback = true;
+		case SM_SocketType_Udp:
+			std::static_pointer_cast<Socket<udp>>(sw->socket)->SetSendqueueEmptyCallback(func);
 			break;
-		}
 		default:
 			return false;
-	}
-
-	if (forceSendqueueEmptyCallback) {
-		int32_t handle = 0;
-		IPluginFunction* func = nullptr;
-		int32_t arg = 0;
-
-		switch (sw->socketType) {
-			case SM_SocketType_Tcp: {
-				auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
-				handle = socket->smHandle;
-				func = socket->sendqueueEmptyCallback;
-				arg = socket->smCallbackArg;
-				break;
-			}
-			case SM_SocketType_Udp: {
-				auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
-				handle = socket->smHandle;
-				func = socket->sendqueueEmptyCallback;
-				arg = socket->smCallbackArg;
-				break;
-			}
-		}
-
-		if (func) {
-			callbackHandler.AddCallback(Callback::MakeSendQueueEmpty(handle, func, arg));
-		}
 	}
 
 	return true;

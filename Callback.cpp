@@ -105,6 +105,14 @@ void Callback::Execute() {
 				myself->GetIdentity(),
 				NULL);
 
+			if (childHandle == BAD_HANDLE) {
+				// Handle creation failed (e.g., handle limit reached). Destroy the
+				// child socket to avoid a leak — it has no SM handle and can't be
+				// closed by the plugin.
+				socketHandler.DestroySocket(childSocketWrapper_);
+				break;
+			}
+
 			socketHandler.SetChildHandle(childSocketWrapper_, childHandle);
 
 			function_->PushCell(smHandle_);

@@ -28,6 +28,7 @@ public:
 	bool IsOpen();
 
 	bool Bind(const char* hostname, uint16_t port);
+	void SetSendqueueEmptyCallback(IPluginFunction* func);
 	bool Connect(const char* hostname, uint16_t port);
 	bool Disconnect();
 	bool Listen();
@@ -37,16 +38,21 @@ public:
 	void Destroy();
 	void StartReceive();
 
-	IPluginFunction* connectCallback = nullptr;
-	IPluginFunction* incomingCallback = nullptr;
-	IPluginFunction* receiveCallback = nullptr;
-	IPluginFunction* sendqueueEmptyCallback = nullptr;
-	IPluginFunction* disconnectCallback = nullptr;
-	IPluginFunction* errorCallback = nullptr;
+	// These fields are written from the game thread and read from the IO thread's strand
+	// handlers, so they must be atomic to avoid data races.
+	std::atomic<IPluginFunction*> connectCallback{nullptr};
+	std::atomic<IPluginFunction*> incomingCallback{nullptr};
+	std::atomic<IPluginFunction*> receiveCallback{nullptr};
+	std::atomic<IPluginFunction*> sendqueueEmptyCallback{nullptr};
+	std::atomic<IPluginFunction*> disconnectCallback{nullptr};
+	std::atomic<IPluginFunction*> errorCallback{nullptr};
 
-	int32_t smHandle = 0;
-	int32_t smCallbackArg = 0;
+	std::atomic<int32_t> smHandle{0};
+	std::atomic<int32_t> smCallbackArg{0};
 	std::atomic<unsigned int> sendQueueLength{0};
+	// Mirrors socket_->is_open() but safe to read from the game thread without a strand.
+	// Written from the game thread (InitializeSocket) or IO thread (close handlers).
+	std::atomic<bool> open_{false};
 
 	SocketWrapper* wrapper_ = nullptr;
 

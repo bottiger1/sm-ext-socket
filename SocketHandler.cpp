@@ -118,6 +118,9 @@ void SocketHandler::DestroySocket(SocketWrapper* sw) {
 void SocketHandler::SetChildHandle(SocketWrapper* sw, int32_t handle) {
 	if (!sw) return;
 
+	std::lock_guard<std::mutex> lock(socketsMutex_);
+	if (sockets_.find(sw) == sockets_.end()) return; // socket destroyed before callback ran
+
 	switch (sw->socketType) {
 		case SM_SocketType_Tcp: {
 			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
