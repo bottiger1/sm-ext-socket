@@ -23,6 +23,10 @@ bool Extension::SDK_OnLoad(char *error, size_t err_max, bool late) {
 
 	sharesys->AddNatives(myself, smsock_natives);
 	socketHandleType = handlesys->CreateType("Socket", this, 0, NULL, NULL, myself->GetIdentity(), NULL);
+	if (socketHandleType == 0) {
+		snprintf(error, err_max, "Failed to register Socket handle type (already registered?)");
+		return false;
+	}
 
 	socketHandler.StartProcessing();
 

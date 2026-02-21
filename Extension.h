@@ -12,7 +12,7 @@ public:
 
 	SocketWrapper* GetSocketWrapperByHandle(Handle_t);
 
-	HandleType_t socketHandleType;
+	HandleType_t socketHandleType = 0;
 };
 
 extern Extension extension;

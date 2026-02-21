@@ -70,6 +70,22 @@ std::unique_ptr<Callback> Callback::MakeError(int32_t handle, IPluginFunction* f
 void Callback::Execute() {
 	if (!function_) return;
 
+	// Verify the parent socket handle is still valid before touching function_.
+	// When a plugin unloads, SourceMod frees its handles (invalidating them) before
+	// destroying the plugin context (which frees IPluginFunction* objects). So a
+	// failed ReadHandle means the function pointer is about to become (or already is)
+	// dangling — skip the callback rather than crash.
+	HandleSecurity sec = {nullptr, myself->GetIdentity()};
+	void* obj = nullptr;
+	if (handlesys->ReadHandle(static_cast<Handle_t>(smHandle_), extension.socketHandleType, &sec, &obj) != HandleError_None) {
+		// If this was a pending incoming-connection callback, the child socket wrapper
+		// was already registered but has no SM handle yet — destroy it to avoid a leak.
+		if (event_ == CallbackEvent_Incoming && childSocketWrapper_) {
+			socketHandler.DestroySocket(childSocketWrapper_);
+		}
+		return;
+	}
+
 	switch (event_) {
 		case CallbackEvent_Connect:
 			function_->PushCell(smHandle_);

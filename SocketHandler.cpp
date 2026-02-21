@@ -55,6 +55,7 @@ void SocketHandler::Shutdown() {
 }
 
 void SocketHandler::StartProcessing() {
+	ioContext_.restart(); // required after stop() to allow run() to block again
 	ioWork_ = std::make_unique<boost::asio::io_context::work>(ioContext_);
 	ioThread_ = std::make_unique<boost::thread>(&SocketHandler::RunIoService, this);
 	ioThreadStarted_ = true;
