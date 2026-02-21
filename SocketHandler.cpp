@@ -13,9 +13,10 @@ SocketHandler::~SocketHandler() {
 }
 
 void SocketHandler::Shutdown() {
+	// Step 1: Mark all current sockets as destroyed — this causes async handlers
+	// to bail out early, preventing new work from being started.
 	{
 		std::lock_guard<std::mutex> lock(socketsMutex_);
-
 		for (auto& pair : sockets_) {
 			SocketWrapper* sw = pair.second.get();
 			switch (sw->socketType) {
@@ -27,9 +28,12 @@ void SocketHandler::Shutdown() {
 					break;
 			}
 		}
-		sockets_.clear();
 	}
 
+	// Step 2: Stop io_context and join the io thread. After join returns, no
+	// handlers are running and no new handlers will execute. Any handler that
+	// raced between step 1 and step 2 (e.g. an accept handler creating a child
+	// socket) has completed.
 	if (ioThreadStarted_) {
 		ioContext_.stop();
 		ioThread_->join();
@@ -38,16 +42,25 @@ void SocketHandler::Shutdown() {
 		ioWork_.reset();
 	}
 
+	// Step 3: Clear all sockets — this includes both the original sockets (already
+	// marked destroyed) and any child sockets created by racing handlers. Releasing
+	// the SocketWrapper shared_ptrs drops one reference; remaining references held
+	// by pending io_context handlers are released when io_context destructs.
+	{
+		std::lock_guard<std::mutex> lock(socketsMutex_);
+		sockets_.clear();
+	}
+
 	callbackHandler.Flush();
 }
 
 void SocketHandler::StartProcessing() {
+	ioWork_ = std::make_unique<boost::asio::io_context::work>(ioContext_);
 	ioThread_ = std::make_unique<boost::thread>(&SocketHandler::RunIoService, this);
 	ioThreadStarted_ = true;
 }
 
 void SocketHandler::RunIoService() {
-	ioWork_ = std::make_unique<boost::asio::io_context::work>(ioContext_);
 	ioContext_.run();
 }
 
@@ -106,12 +119,18 @@ void SocketHandler::SetChildHandle(SocketWrapper* sw, int32_t handle) {
 	if (!sw) return;
 
 	switch (sw->socketType) {
-		case SM_SocketType_Tcp:
-			std::static_pointer_cast<Socket<tcp>>(sw->socket)->smHandle = handle;
+		case SM_SocketType_Tcp: {
+			auto socket = std::static_pointer_cast<Socket<tcp>>(sw->socket);
+			socket->smHandle = handle;
+			socket->StartReceive();
 			break;
-		case SM_SocketType_Udp:
-			std::static_pointer_cast<Socket<udp>>(sw->socket)->smHandle = handle;
+		}
+		case SM_SocketType_Udp: {
+			auto socket = std::static_pointer_cast<Socket<udp>>(sw->socket);
+			socket->smHandle = handle;
+			socket->StartReceive();
 			break;
+		}
 	}
 }
 

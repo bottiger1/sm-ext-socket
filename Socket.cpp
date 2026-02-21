@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <functional>
+#include <type_traits>
 
 #include "Callback.h"
 #include "CallbackHandler.h"
@@ -72,22 +73,22 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 		auto self = this->shared_from_this();
 		auto resolver = std::make_shared<typename SocketType::resolver>(ioc_);
 		auto timer = std::make_shared<boost::asio::deadline_timer>(ioc_);
+		auto timedOut = std::make_shared<std::atomic<bool>>(false);
 		timer->expires_from_now(boost::posix_time::seconds(2));
 
 		resolver->async_resolve(
 			typename SocketType::resolver::query(SocketType::v4(), hostname, sPort),
-			strand_.wrap([self, resolver, timer](const boost::system::error_code& ec,
+			strand_.wrap([self, resolver, timer, timedOut](const boost::system::error_code& ec,
 			                                     typename SocketType::resolver::iterator endpoints) {
 				timer->cancel();
 				if (self->destroyed_) return;
 
 				if (!ec) {
-					// Try connecting to resolved endpoints
-					auto endpoint = *endpoints;
 					if (!self->socket_) return;
 
-					self->socket_->async_connect(endpoint,
-						self->strand_.wrap([self, resolver, endpoints](const boost::system::error_code& ec2) mutable {
+					boost::asio::async_connect(*self->socket_, endpoints,
+						self->strand_.wrap([self, resolver](const boost::system::error_code& ec2,
+						                                     typename SocketType::resolver::iterator) {
 							if (self->destroyed_) return;
 
 							if (!ec2) {
@@ -96,29 +97,6 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 										Callback::MakeConnect(self->smHandle, self->connectCallback, self->smCallbackArg));
 								}
 								self->StartReceive();
-							} else if (++endpoints != typename SocketType::resolver::iterator()) {
-								// Try next endpoint
-								if (self->socket_) {
-									self->socket_->close();
-									auto nextEndpoint = *endpoints;
-									self->socket_->async_connect(nextEndpoint,
-										self->strand_.wrap([self, resolver, endpoints](const boost::system::error_code& ec3) mutable {
-											if (self->destroyed_) return;
-											if (!ec3) {
-												if (self->connectCallback) {
-													callbackHandler.AddCallback(
-														Callback::MakeConnect(self->smHandle, self->connectCallback, self->smCallbackArg));
-												}
-												self->StartReceive();
-											} else if (ec3 != boost::asio::error::operation_aborted) {
-												if (self->errorCallback) {
-													callbackHandler.AddCallback(
-														Callback::MakeError(self->smHandle, self->errorCallback,
-															self->smCallbackArg, SM_ErrorType_CONNECT_ERROR, ec3.value()));
-												}
-											}
-										}));
-								}
 							} else if (ec2 != boost::asio::error::operation_aborted) {
 								if (self->errorCallback) {
 									callbackHandler.AddCallback(
@@ -127,17 +105,25 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 								}
 							}
 						}));
-				} else {
-					if (ec != boost::asio::error::operation_aborted && self->errorCallback) {
+				} else if (ec != boost::asio::error::operation_aborted) {
+					if (self->errorCallback) {
 						callbackHandler.AddCallback(
 							Callback::MakeError(self->smHandle, self->errorCallback,
 								self->smCallbackArg, SM_ErrorType_NO_HOST, ec.value()));
 					}
+				} else if (*timedOut && self->errorCallback) {
+					// Timer cancelled the resolver — report as DNS timeout
+					callbackHandler.AddCallback(
+						Callback::MakeError(self->smHandle, self->errorCallback,
+							self->smCallbackArg, SM_ErrorType_NO_HOST, ec.value()));
 				}
 			}));
 
-		timer->async_wait([resolver](const boost::system::error_code& ec) {
-			if (!ec) resolver->cancel();
+		timer->async_wait([resolver, timedOut](const boost::system::error_code& ec) {
+			if (!ec) {
+				*timedOut = true;
+				resolver->cancel();
+			}
 		});
 
 		return true;
@@ -150,12 +136,14 @@ template <class SocketType>
 bool Socket<SocketType>::Disconnect() {
 	if (!socket_) return false;
 
-	try {
-		socket_->close();
-		return true;
-	} catch (std::exception&) {
-		return false;
-	}
+	auto self = this->shared_from_this();
+	strand_.post([self]() {
+		if (self->socket_) {
+			boost::system::error_code ec;
+			self->socket_->close(ec);
+		}
+	});
+	return true;
 }
 
 // Generic Listen returns false; TCP specialization below
@@ -191,27 +179,70 @@ bool Socket<SocketType>::Send(const std::string& data) {
 
 		sendQueueLength++;
 
-		boost::asio::async_write(*socket_, boost::asio::buffer(*buf),
-			strand_.wrap([self, buf](const boost::system::error_code& ec, size_t) {
-				if (self->destroyed_) return;
-
-				if (--self->sendQueueLength == 0 && self->sendqueueEmptyCallback) {
-					callbackHandler.AddCallback(
-						Callback::MakeSendQueueEmpty(self->smHandle, self->sendqueueEmptyCallback, self->smCallbackArg));
-				}
-
-				if (ec && ec != boost::asio::error::operation_aborted) {
-					if (self->errorCallback) {
-						callbackHandler.AddCallback(
-							Callback::MakeError(self->smHandle, self->errorCallback,
-								self->smCallbackArg, SM_ErrorType_SEND_ERROR, ec.value()));
-					}
-				}
-			}));
+		strand_.post([self, buf]() {
+			self->sendQueue_.push_back(buf);
+			if (!self->writing_) {
+				self->DoSend();
+			}
+		});
 
 		return true;
 	} catch (std::exception&) {
 		return false;
+	}
+}
+
+template <class SocketType>
+void Socket<SocketType>::DoSend() {
+	if (destroyed_ || !socket_ || sendQueue_.empty()) return;
+
+	writing_ = true;
+	auto buf = sendQueue_.front();
+	sendQueue_.pop_front();
+	auto self = this->shared_from_this();
+
+	auto handler = strand_.wrap([self, buf](const boost::system::error_code& ec, size_t) {
+		if (self->destroyed_) {
+			--self->sendQueueLength;
+			self->writing_ = false;
+			return;
+		}
+
+		if (ec && ec != boost::asio::error::operation_aborted) {
+			// Drain remaining queue items so sendQueueLength stays consistent
+			unsigned int drained = static_cast<unsigned int>(self->sendQueue_.size());
+			self->sendQueue_.clear();
+			self->sendQueueLength -= (1 + drained);
+			self->writing_ = false;
+
+			if (self->errorCallback) {
+				callbackHandler.AddCallback(
+					Callback::MakeError(self->smHandle, self->errorCallback,
+						self->smCallbackArg, SM_ErrorType_SEND_ERROR, ec.value()));
+			}
+			return;
+		}
+
+		unsigned int remaining = --self->sendQueueLength;
+
+		if (!self->sendQueue_.empty()) {
+			self->DoSend();
+		} else {
+			self->writing_ = false;
+			if (remaining == 0 && self->sendqueueEmptyCallback) {
+				callbackHandler.AddCallback(
+					Callback::MakeSendQueueEmpty(self->smHandle, self->sendqueueEmptyCallback, self->smCallbackArg));
+			}
+		}
+	});
+
+	// async_write is a composed operation that guarantees complete sends (TCP).
+	// async_send sends a single datagram atomically (UDP).
+	// async_write requires AsyncWriteStream which datagram sockets don't satisfy.
+	if constexpr (std::is_same_v<SocketType, tcp>) {
+		boost::asio::async_write(*socket_, boost::asio::buffer(*buf), handler);
+	} else {
+		socket_->async_send(boost::asio::buffer(*buf), handler);
 	}
 }
 
@@ -233,42 +264,54 @@ bool Socket<udp>::SendTo(const std::string& data, const char* hostname, uint16_t
 		auto self = this->shared_from_this();
 		auto resolver = std::make_shared<udp::resolver>(ioc_);
 		auto timer = std::make_shared<boost::asio::deadline_timer>(ioc_);
+		auto timedOut = std::make_shared<std::atomic<bool>>(false);
 		timer->expires_from_now(boost::posix_time::seconds(2));
 
 		sendQueueLength++;
 
 		resolver->async_resolve(
 			udp::resolver::query(udp::v4(), hostname, sPort),
-			strand_.wrap([self, resolver, buf, timer](const boost::system::error_code& ec,
+			strand_.wrap([self, resolver, buf, timer, timedOut](const boost::system::error_code& ec,
 			                                          udp::resolver::iterator endpoints) {
 				timer->cancel();
-				if (self->destroyed_) return;
+				if (self->destroyed_) {
+					--self->sendQueueLength;
+					return;
+				}
 
 				if (!ec) {
 					auto endpoint = *endpoints;
-					if (!self->socket_) return;
+					if (!self->socket_) {
+						--self->sendQueueLength;
+						return;
+					}
 
 					self->socket_->async_send_to(boost::asio::buffer(*buf), endpoint,
 						self->strand_.wrap([self, resolver, buf](const boost::system::error_code& ec2, size_t) {
+							unsigned int remaining = --self->sendQueueLength;
 							if (self->destroyed_) return;
 
 							if (!ec2) {
-								if (--self->sendQueueLength == 0 && self->sendqueueEmptyCallback) {
+								if (remaining == 0 && self->sendqueueEmptyCallback) {
 									callbackHandler.AddCallback(
 										Callback::MakeSendQueueEmpty(self->smHandle, self->sendqueueEmptyCallback, self->smCallbackArg));
 								}
-							} else {
-								--self->sendQueueLength;
-								if (ec2 != boost::asio::error::operation_aborted && self->errorCallback) {
-									callbackHandler.AddCallback(
-										Callback::MakeError(self->smHandle, self->errorCallback,
-											self->smCallbackArg, SM_ErrorType_SEND_ERROR, ec2.value()));
-								}
+							} else if (ec2 != boost::asio::error::operation_aborted && self->errorCallback) {
+								callbackHandler.AddCallback(
+									Callback::MakeError(self->smHandle, self->errorCallback,
+										self->smCallbackArg, SM_ErrorType_SEND_ERROR, ec2.value()));
 							}
 						}));
+				} else if (ec != boost::asio::error::operation_aborted) {
+					--self->sendQueueLength;
+					if (self->errorCallback) {
+						callbackHandler.AddCallback(
+							Callback::MakeError(self->smHandle, self->errorCallback,
+								self->smCallbackArg, SM_ErrorType_NO_HOST, ec.value()));
+					}
 				} else {
 					--self->sendQueueLength;
-					if (ec != boost::asio::error::operation_aborted && self->errorCallback) {
+					if (*timedOut && self->errorCallback) {
 						callbackHandler.AddCallback(
 							Callback::MakeError(self->smHandle, self->errorCallback,
 								self->smCallbackArg, SM_ErrorType_NO_HOST, ec.value()));
@@ -276,8 +319,11 @@ bool Socket<udp>::SendTo(const std::string& data, const char* hostname, uint16_t
 				}
 			}));
 
-		timer->async_wait([resolver](const boost::system::error_code& ec) {
-			if (!ec) resolver->cancel();
+		timer->async_wait([resolver, timedOut](const boost::system::error_code& ec) {
+			if (!ec) {
+				*timedOut = true;
+				resolver->cancel();
+			}
 		});
 
 		return true;
@@ -288,10 +334,16 @@ bool Socket<udp>::SendTo(const std::string& data, const char* hostname, uint16_t
 
 template <class SocketType>
 bool Socket<SocketType>::SetOption(SM_SocketOption so, int value) {
-	if (socket_) {
-		return ApplyOption(so, value, *socket_);
-	} else if (tcpAcceptor_) {
-		return ApplyOption(so, value, *tcpAcceptor_);
+	if (socket_ || tcpAcceptor_) {
+		auto self = this->shared_from_this();
+		strand_.post([self, so, value]() {
+			if (self->socket_) {
+				self->ApplyOption(so, value, *self->socket_);
+			} else if (self->tcpAcceptor_) {
+				self->ApplyOption(so, value, *self->tcpAcceptor_);
+			}
+		});
+		return true;
 	} else {
 		pendingOptions_.push_back({so, value});
 		return true;
@@ -304,6 +356,8 @@ void Socket<SocketType>::Destroy() {
 
 	auto self = this->shared_from_this();
 	strand_.post([self]() {
+		self->sendQueue_.clear();
+		self->writing_ = false;
 		if (self->socket_) {
 			boost::system::error_code ec;
 			self->socket_->close(ec);
@@ -319,8 +373,12 @@ void Socket<SocketType>::Destroy() {
 
 template <class SocketType>
 void Socket<SocketType>::StartReceive() {
-	auto buf = std::make_shared<std::vector<char>>(16384);
-	DoReceive(buf);
+	auto self = this->shared_from_this();
+	strand_.dispatch([self]() {
+		if (self->destroyed_ || !self->socket_) return;
+		auto buf = std::make_shared<std::vector<char>>(16384);
+		self->DoReceive(buf);
+	});
 }
 
 template <class SocketType>
@@ -382,22 +440,23 @@ void Socket<tcp>::HandleAccept(std::shared_ptr<tcp::socket> newAsioSocket,
 	if (destroyed_) return;
 
 	if (!ec && tcpAcceptor_) {
-		std::string remoteIP = newAsioSocket->remote_endpoint().address().to_string();
-		uint16_t remotePort = newAsioSocket->remote_endpoint().port();
+		try {
+			std::string remoteIP = newAsioSocket->remote_endpoint().address().to_string();
+			uint16_t remotePort = newAsioSocket->remote_endpoint().port();
 
-		auto childResult = socketHandler.CreateSocketFromAccepted(smSocketType_, std::move(*newAsioSocket));
-		auto childSocket = std::static_pointer_cast<Socket<tcp>>(childResult.first);
-		SocketWrapper* childWrapper = childResult.second;
+			auto childResult = socketHandler.CreateSocketFromAccepted(smSocketType_, std::move(*newAsioSocket));
+			SocketWrapper* childWrapper = childResult.second;
 
-		if (incomingCallback) {
-			callbackHandler.AddCallback(
-				Callback::MakeIncoming(smHandle, incomingCallback, smCallbackArg,
-					childWrapper, remoteIP, remotePort));
+			if (incomingCallback) {
+				callbackHandler.AddCallback(
+					Callback::MakeIncoming(smHandle, incomingCallback, smCallbackArg,
+						childWrapper, remoteIP, remotePort));
+			}
+		} catch (std::exception&) {
+			// remote_endpoint() or socket creation failed — skip this connection
 		}
 
-		childSocket->StartReceive();
-
-		// Continue accepting
+		// Continue accepting regardless of whether this connection succeeded
 		DoAcceptLoop();
 	} else if (ec && ec != boost::asio::error::operation_aborted) {
 		if (errorCallback) {
@@ -405,6 +464,8 @@ void Socket<tcp>::HandleAccept(std::shared_ptr<tcp::socket> newAsioSocket,
 				Callback::MakeError(smHandle, errorCallback,
 					smCallbackArg, SM_ErrorType_LISTEN_ERROR, ec.value()));
 		}
+		// Continue accepting — transient errors shouldn't kill the listener
+		DoAcceptLoop();
 	}
 }
 

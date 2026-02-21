@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <utility>
@@ -34,6 +35,7 @@ public:
 	bool SendTo(const std::string& data, const char* hostname, uint16_t port);
 	bool SetOption(SM_SocketOption so, int value);
 	void Destroy();
+	void StartReceive();
 
 	IPluginFunction* connectCallback = nullptr;
 	IPluginFunction* incomingCallback = nullptr;
@@ -52,7 +54,7 @@ private:
 	Socket(boost::asio::io_context& ioc, SM_SocketType st);
 	Socket(boost::asio::io_context& ioc, SM_SocketType st, typename SocketType::socket&& acceptedSocket);
 
-	void StartReceive();
+	void DoSend();
 	void DoReceive(std::shared_ptr<std::vector<char>> buf);
 
 	void DoAcceptLoop();
@@ -74,6 +76,9 @@ private:
 	std::unique_ptr<typename SocketType::socket> socket_;
 	std::unique_ptr<typename SocketType::endpoint> localEndpoint_;
 	std::unique_ptr<boost::asio::ip::tcp::acceptor> tcpAcceptor_;
+
+	std::deque<std::shared_ptr<std::vector<char>>> sendQueue_;
+	bool writing_ = false;
 
 	std::atomic<bool> destroyed_{false};
 };
