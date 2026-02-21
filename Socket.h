@@ -61,7 +61,7 @@ private:
 	Socket(boost::asio::io_context& ioc, SM_SocketType st, typename SocketType::socket&& acceptedSocket);
 
 	void DoSend();
-	void DoReceive(std::shared_ptr<std::vector<char>> buf);
+	void DoReceive();
 
 	void DoAcceptLoop();
 	void HandleAccept(std::shared_ptr<boost::asio::ip::tcp::socket> newAsioSocket,
@@ -83,7 +83,8 @@ private:
 	std::unique_ptr<typename SocketType::endpoint> localEndpoint_;
 	std::unique_ptr<boost::asio::ip::tcp::acceptor> tcpAcceptor_;
 
-	std::deque<std::shared_ptr<std::vector<char>>> sendQueue_;
+	std::deque<std::vector<char>> sendQueue_;
+	std::vector<char> receiveBuffer_;
 	bool writing_ = false;
 
 	std::atomic<bool> destroyed_{false};

@@ -88,6 +88,10 @@ cell_t SocketCreate(IPluginContext *pContext, const cell_t *params) {
 			SocketWrapper* sw = result.second;
 
 			handle = handlesys->CreateHandle(extension.socketHandleType, sw, pContext->GetIdentity(), myself->GetIdentity(), NULL);
+			if (handle == BAD_HANDLE) {
+				socketHandler.DestroySocket(sw);
+				return BAD_HANDLE;
+			}
 
 			socket->smHandle = handle;
 			socket->errorCallback = pContext->GetFunctionById(params[2]);
@@ -99,6 +103,10 @@ cell_t SocketCreate(IPluginContext *pContext, const cell_t *params) {
 			SocketWrapper* sw = result.second;
 
 			handle = handlesys->CreateHandle(extension.socketHandleType, sw, pContext->GetIdentity(), myself->GetIdentity(), NULL);
+			if (handle == BAD_HANDLE) {
+				socketHandler.DestroySocket(sw);
+				return BAD_HANDLE;
+			}
 
 			socket->smHandle = handle;
 			socket->errorCallback = pContext->GetFunctionById(params[2]);

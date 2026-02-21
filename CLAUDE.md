@@ -17,9 +17,10 @@ This project uses **AMBuild** (AlliedModders Build system). There is also a lega
 ### Build Commands
 ```bash
 # From the build/ directory:
-python ../configure.py --sm-path <SOURCEMOD_PATH> --boost-path <BOOST_PATH> [--enable-optimize 1] [--enable-debug 1]
-ambuild
+bash build
 ```
+
+The `build` script (at `build/build`) runs configure + ambuild with the correct paths. Do not invoke `ambuild` directly.
 
 ### Configure Options
 - `--sm-path`: Path to SourceMod source tree
@@ -65,6 +66,11 @@ Defined in `scripting/include/socket.inc`. Exposes both legacy function-style na
 - `boost::mutex socketMutex` protects the underlying Boost.Asio socket
 - `boost::mutex callbackQueueMutex` protects the callback queue
 - DNS resolution has a 2-second timeout via `boost::asio::deadline_timer`
+
+## SourcePawn Gotchas
+
+- **`_` is not a valid identifier** — SourcePawn's parser rejects a bare underscore as a parameter name. Use a real name (e.g. `any arg`) even when the value is intentionally unused.
+- **`static` is valid** on file-scope functions in SourcePawn.
 
 ## File Layout
 - Root `.cpp/.h` files: All extension source code (no subdirectories for source)
