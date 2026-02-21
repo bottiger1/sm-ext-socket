@@ -154,6 +154,14 @@ bool Socket<SocketType>::Disconnect() {
 	return true;
 }
 
+// Forward-declare TCP specializations before their first use in Socket<tcp>::Listen,
+// otherwise the compiler implicitly instantiates the generic templates for tcp
+// and then rejects the explicit specializations later in this TU.
+template <>
+void Socket<tcp>::DoAcceptLoop();
+template <>
+void Socket<tcp>::HandleAccept(std::shared_ptr<tcp::socket>, const boost::system::error_code&);
+
 // Generic Listen returns false; TCP specialization below
 template <class SocketType>
 bool Socket<SocketType>::Listen() {
