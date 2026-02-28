@@ -22,11 +22,42 @@ def ResolveEnvPath(env, folder):
 def Normalize(path):
   return os.path.abspath(os.path.normpath(path))
 
+def SetArchFlags(compiler):
+  if compiler.behavior == 'gcc':
+    if compiler.target.arch == 'x86_64':
+      compiler.cflags += ['-fPIC']
+  elif compiler.like('msvc'):
+    if compiler.target.arch == 'x86_64':
+      compiler.defines += ['WIN64']
+
 class ExtensionConfig(object):
   def __init__(self):
     self.extensions = []
     self.sm_root = None
     self.boost_root = None
+    self.all_targets = []
+    self.target_archs = set()
+
+    if builder.options.targets:
+      target_archs = builder.options.targets.split(',')
+    else:
+      target_archs = ['x86']
+      if builder.backend != 'amb2':
+        target_archs.append('x86_64')
+
+    for arch in target_archs:
+      try:
+        cxx = builder.DetectCxx(target_arch=arch)
+        self.target_archs.add(cxx.target.arch)
+      except Exception as e:
+        if builder.options.targets:
+          raise
+        print('Skipping target {}: {}'.format(arch, e))
+        continue
+      self.all_targets.append(cxx)
+
+    if not self.all_targets:
+      raise Exception('No suitable C/C++ compiler was found.')
 
   @property
   def tag(self):
@@ -56,11 +87,13 @@ class ExtensionConfig(object):
       raise Exception('Could not find a copy of Boost')
 
   def configure(self):
-    cxx = builder.DetectCompilers()
+    for cxx in self.all_targets:
+      self.configure_cxx(cxx)
 
+  def configure_cxx(self, cxx):
     if cxx.like('gcc'):
       self.configure_gcc(cxx)
-    elif cxx.vendor == 'msvc':
+    elif cxx.family == 'msvc':
       self.configure_msvc(cxx)
 
     # Optimization
@@ -72,11 +105,11 @@ class ExtensionConfig(object):
       cxx.defines += ['DEBUG', '_DEBUG']
 
     # Platform-specifics
-    if builder.target_platform == 'linux':
+    if cxx.target.platform == 'linux':
       self.configure_linux(cxx)
-    elif builder.target_platform == 'mac':
+    elif cxx.target.platform == 'mac':
       self.configure_mac(cxx)
-    elif builder.target_platform == 'windows':
+    elif cxx.target.platform == 'windows':
       self.configure_windows(cxx)
 
     # Finish up.
@@ -101,9 +134,11 @@ class ExtensionConfig(object):
       '-Wno-unused',
       '-Wno-switch',
       '-Wno-array-bounds',
-      '-msse',
       '-fvisibility=hidden',
     ]
+    if cxx.target.arch in ['x86', 'x86_64']:
+      cxx.cflags += ['-msse']
+
     cxx.cxxflags += [
       '-std=c++17',
       # '-fno-exceptions',
@@ -112,11 +147,10 @@ class ExtensionConfig(object):
       '-Wno-overloaded-virtual',
       '-fvisibility-inlines-hidden',
       '-D_GLIBCXX_USE_CXX11_ABI=0',
-      '-fPIC'
     ]
 
-    have_gcc = cxx.vendor == 'gcc'
-    have_clang = cxx.vendor == 'clang'
+    have_gcc = cxx.family == 'gcc'
+    have_clang = cxx.family == 'clang'
     if cxx.version >= 'clang-3.6':
       cxx.cxxflags += ['-Wno-inconsistent-missing-override']
     if have_clang or (cxx.version >= 'gcc-4.6'):
@@ -162,7 +196,6 @@ class ExtensionConfig(object):
       '/TP',
     ]
     cxx.linkflags += [
-      '/MACHINE:X86',
       'kernel32.lib',
       'user32.lib',
       'gdi32.lib',
@@ -178,8 +211,7 @@ class ExtensionConfig(object):
     ]
 
     # setup boost libraries
-
-    cxx.linkflags += ['/LIBPATH:"' + os.path.join(self.boost_root, 'stage', 'x86_64', 'lib') + '"']
+    cxx.linkflags += ['/LIBPATH:"' + os.path.join(self.boost_root, 'stage', cxx.target.arch, 'lib') + '"']
 
     if builder.options.opt == '1':
       cxx.cflags += ['/Ox', '/Zo']
@@ -194,17 +226,17 @@ class ExtensionConfig(object):
 
   def configure_linux(self, cxx):
     cxx.defines += ['_LINUX', 'POSIX']
-    
+
     # link flags based off of socket Makefile
     cxx.linkflags += ['-lpthread', '-Wl,-Bstatic', '-lm', '-lstdc++']
 
-    cxx.linkflags += ['-L', os.path.join(self.boost_root, 'stage', 'x86_64', 'lib')]
+    cxx.linkflags += ['-L', os.path.join(self.boost_root, 'stage', cxx.target.arch, 'lib')]
 
     cxx.linkflags += ['-lboost_thread']
     cxx.linkflags += ['-Wl,-Bdynamic']
-    if cxx.vendor == 'gcc':
+    if cxx.family == 'gcc':
       cxx.linkflags += ['-static-libgcc']
-    elif cxx.vendor == 'clang':
+    elif cxx.family == 'clang':
       cxx.linkflags += ['-lgcc_eh']
 
   def configure_mac(self, cxx):
@@ -232,8 +264,10 @@ class ExtensionConfig(object):
     ]
     return compiler
 
-  def Library(self, context, name):
-    binary = context.compiler.Library(name)
+  def Library(self, context, compiler, name):
+    compiler = compiler.clone()
+    SetArchFlags(compiler)
+    binary = compiler.Library(name)
     self.ConfigureForExtension(context, binary.compiler)
     return binary
 
@@ -241,6 +275,10 @@ Extension = ExtensionConfig()
 Extension.detectSourceMod()
 Extension.detectBoost()
 Extension.configure()
+
+# This will clone the list and each cxx object as we recurse, preventing child
+# scripts from messing up global state.
+builder.targets = builder.CloneableList(Extension.all_targets)
 
 # Add additional buildscripts here
 BuildScripts = [
@@ -252,4 +290,4 @@ if builder.backend == 'amb2':
     'PackageScript',
   ]
 
-builder.RunBuildScripts(BuildScripts, {'Extension': Extension})
+builder.Build(BuildScripts, {'Extension': Extension})
