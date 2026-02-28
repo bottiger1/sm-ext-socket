@@ -212,6 +212,7 @@ cell_t SocketListen(IPluginContext *pContext, const cell_t *params) {
 cell_t SocketSend(IPluginContext *pContext, const cell_t *params) {
 	SocketWrapper* sw = extension.GetSocketWrapperByHandle(static_cast<Handle_t>(params[1]));
 	if (sw == NULL) return pContext->ThrowNativeError("Invalid handle: %i", params[1]);
+	if (params[3] < -1) return pContext->ThrowNativeError("Invalid size specified: %d", params[3]);
 
 	char* dataTmp = NULL;
 	pContext->LocalToString(params[2], &dataTmp);
@@ -245,6 +246,8 @@ cell_t SocketSendTo(IPluginContext *pContext, const cell_t *params) {
 	SocketWrapper* sw = extension.GetSocketWrapperByHandle(static_cast<Handle_t>(params[1]));
 	if (sw == NULL) return pContext->ThrowNativeError("Invalid handle: %i", params[1]);
 	if (sw->socketType == SM_SocketType_Tcp) return pContext->ThrowNativeError("This native doesn't support connection orientated protocols");
+	if (params[3] < -1) return pContext->ThrowNativeError("Invalid size specified: %d", params[3]);
+	if (params[5] < 0 || params[5] > 65535) return pContext->ThrowNativeError("Invalid port specified");
 
 	char* dataTmp = NULL;
 	pContext->LocalToString(params[2], &dataTmp);
@@ -397,6 +400,8 @@ cell_t SocketSetArg(IPluginContext *pContext, const cell_t *params) {
 cell_t SocketGetHostName(IPluginContext *pContext, const cell_t *params) {
 	char* dest = NULL;
 	pContext->LocalToString(params[1], &dest);
+
+	if (params[2] <= 0) return false;
 
 	boost::system::error_code errorCode;
 	std::string hostName = host_name(errorCode);

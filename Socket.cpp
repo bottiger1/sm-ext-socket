@@ -107,6 +107,7 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 								}
 								self->StartReceive();
 							} else if (ec2 != boost::asio::error::operation_aborted) {
+								self->open_ = false;
 								if (self->errorCallback) {
 									callbackHandler.AddCallback(
 										Callback::MakeError(self->smHandle, self->errorCallback,
@@ -115,6 +116,7 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 							}
 						}));
 				} else if (ec != boost::asio::error::operation_aborted) {
+					self->open_ = false;
 					if (self->errorCallback) {
 						callbackHandler.AddCallback(
 							Callback::MakeError(self->smHandle, self->errorCallback,
@@ -122,6 +124,7 @@ bool Socket<SocketType>::Connect(const char* hostname, uint16_t port) {
 					}
 				} else {
 					// ec == operation_aborted: resolver was cancelled by the timeout timer.
+					self->open_ = false;
 					if (self->errorCallback) {
 						callbackHandler.AddCallback(
 							Callback::MakeError(self->smHandle, self->errorCallback,
