@@ -1,5 +1,9 @@
 # vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
-import os
+import os, subprocess, sys, tarfile, urllib.request
+
+# Boost <= 1.86.0 required, later versions change the Asio API
+BOOST_URL = 'https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.bz2'
+BOOST_DIR = 'boost_1_85_0'
 
 def ResolveEnvPath(env, folder):
   if env in os.environ:
@@ -24,8 +28,7 @@ def Normalize(path):
 
 def SetArchFlags(compiler):
   if compiler.behavior == 'gcc':
-    if compiler.target.arch == 'x86_64':
-      compiler.cflags += ['-fPIC']
+    compiler.cflags += ['-fPIC']
   elif compiler.like('msvc'):
     if compiler.target.arch == 'x86_64':
       compiler.defines += ['WIN64']
@@ -82,9 +85,72 @@ class ExtensionConfig(object):
 
   def detectBoost(self):
     if builder.options.boost_path:
-      self.boost_root = builder.options.boost_path
+      self.boost_root = Normalize(builder.options.boost_path)
     else:
-      raise Exception('Could not find a copy of Boost')
+      self.boost_root = Normalize(os.path.join(builder.sourcePath, BOOST_DIR))
+      if not os.path.isdir(self.boost_root):
+        self.downloadBoost()
+
+    if not os.path.isdir(self.boost_root):
+      raise Exception('Boost path does not exist: {}'.format(self.boost_root))
+
+    self.buildBoost()
+
+  def downloadBoost(self):
+    archive_name = os.path.basename(BOOST_URL)
+    archive_path = os.path.join(builder.sourcePath, archive_name)
+
+    print('Downloading {}...'.format(BOOST_URL))
+    urllib.request.urlretrieve(BOOST_URL, archive_path)
+
+    print('Extracting {}...'.format(archive_name))
+    with tarfile.open(archive_path, 'r:bz2') as tar:
+      tar.extractall(path=builder.sourcePath)
+
+    os.remove(archive_path)
+
+  def buildBoost(self):
+    b2_path = os.path.join(self.boost_root, 'b2')
+
+    # Bootstrap b2 if it doesn't exist
+    if not os.path.isfile(b2_path):
+      bootstrap = os.path.join(self.boost_root, 'bootstrap.sh')
+      if not os.path.isfile(bootstrap):
+        raise Exception('Boost source not found at {}'.format(self.boost_root))
+      print('Bootstrapping Boost...')
+      result = subprocess.run([bootstrap], cwd=self.boost_root)
+      if result.returncode != 0:
+        raise Exception('Boost bootstrap failed')
+
+    # Build for each target arch that is missing libraries
+    for arch in self.target_archs:
+      if arch == 'x86':
+        address_model = '32'
+      elif arch == 'x86_64':
+        address_model = '64'
+      else:
+        continue
+
+      stage_dir = os.path.join(self.boost_root, 'stage', arch)
+      lib_dir = os.path.join(stage_dir, 'lib')
+      marker = os.path.join(lib_dir, 'libboost_thread.a')
+
+      if os.path.isfile(marker):
+        continue
+
+      print('Building Boost for {}...'.format(arch))
+      result = subprocess.run([
+        b2_path,
+        'address-model=' + address_model,
+        'cflags=-fPIC', 'cxxflags=-fPIC',
+        'define=BOOST_TYPE_INDEX_FORCE_NO_RTTI_COMPATIBILITY',
+        'runtime-link=static', 'link=static',
+        '--build-dir=build/' + arch,
+        '--stagedir=stage/' + arch,
+        '--with-thread', '--with-date_time', '--with-regex',
+      ], cwd=self.boost_root)
+      if result.returncode != 0:
+        raise Exception('Boost build failed for {}'.format(arch))
 
   def configure(self):
     for cxx in self.all_targets:

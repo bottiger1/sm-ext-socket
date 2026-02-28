@@ -11,3 +11,4 @@ hl2sdk-manifests
 !build/build
 !build/clean
 
+boost_1_85_0/

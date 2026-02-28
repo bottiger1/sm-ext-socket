@@ -9,7 +9,7 @@ parser = run.BuildParser(sourcePath=sys.path[0], api='2.2')
 parser.options.add_argument('--sm-path', type=str, dest='sm_path', default=None,
                        help='Path to SourceMod')
 parser.options.add_argument('--boost-path', type=str, dest='boost_path', default=None,
-                       help='Path to Boost')
+                       help='Path to Boost (requires <= 1.86.0, later versions change the Asio API)')
 parser.options.add_argument('--enable-debug', action='store_const', const='1', dest='debug',
                        help='Enable debugging symbols')
 parser.options.add_argument('--enable-optimize', action='store_const', const='1', dest='opt',
